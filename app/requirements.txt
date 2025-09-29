@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pydantic
+requests
+
+# PyQt6 frontend
+PyQt6
+PyQt6-WebEngine   # optional if you want embedded browser views
+
+# Testing
+pytest
+httpx
+
