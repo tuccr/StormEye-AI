@@ -1,15 +1,15 @@
 import sys
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QTextEdit
-from api_client import send_message
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton, QTextEdit
+from PyQt6 import uic
+from api_client import retrieve_video_feed
+from main_ui import Ui_MainWindow
 
-class MyApp(QWidget):
+class MyApp(QMainWindow, Ui_MainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PyQt6 + FastAPI Demo")
-        self.setMinimumSize(400, 300)
-
+        self.setupUi(self)
         # Layout
-        self.layout = QVBoxLayout()
+        '''self.layout = QVBoxLayout()
 
         # Text editor
         self.text = QTextEdit(self)
@@ -20,12 +20,14 @@ class MyApp(QWidget):
         self.button.clicked.connect(self.call_backend)
         self.layout.addWidget(self.button)
 
-        self.setLayout(self.layout)
+        self.setLayout(self.layout)'''
+        
+        self.btnLiveFeed.clicked.connect(self.retrieve_video_feed)
 
-    def call_backend(self):
-        user_text = self.text.toPlainText()
-        response = send_message(user_text)
-        self.text.setText(f"Response: {response}")
+    def retrieve_video_feed(self):
+        user_text = "video accessed"
+        response = retrieve_video_feed(user_text)
+        print(response)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
