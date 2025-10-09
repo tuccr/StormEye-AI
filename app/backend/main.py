@@ -1,7 +1,8 @@
 from fastapi import FastAPI
-from .routes import router
+from .api.routes import webrtc_routes
 
-app = FastAPI()
-app.include_router(router)
+app = FastAPI(title="StormEye AI", version="1.0.0")
+
+app.include_router(webrtc_routes.router)
 
 
