@@ -4,6 +4,8 @@ from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtCore import QUrl
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
+import asyncio
+from PyQt6 import QtWidgets
 from ui.main_ui import Ui_MainWindow
 from services.webrtc_client import WebRTCClient
 
@@ -47,4 +49,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.videoLabel.clear()
         self.ui.videoLabel.setVisible(False)
         self.webView.setVisible(True)
+
+        self.webrtc_client = WebRTCClient(self.ui.videoLabel)
+        self.ui.btnLiveFeed.clicked.connect(self.on_connect_clicked)
+
+    def on_connect_clicked(self):
+        self.ui.btnLiveFeed.setEnabled(False)
+        asyncio.create_task(self.webrtc_client.start_connection())
 

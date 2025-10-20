@@ -7,3 +7,4 @@ router = APIRouter(prefix="/webrtc", tags=["WebRTC"])
 @router.post("/offer")
 async def offer(request: Offer):
     return await handle_offer(request)
+
