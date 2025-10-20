@@ -15,7 +15,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # --- Add a webview for the map (hidden by default) ---
         self.webView = QWebEngineView(self)
-        self.webView.setVisible(False)git --ver
+        self.webView.setVisible(False)
         # put webView in the same slot as the video (left side)
         # index 0 is the left widget in your HBox; insert at 0 with same stretch=2
         self.ui.videoReportLayout.insertWidget(0, self.webView, 2)
