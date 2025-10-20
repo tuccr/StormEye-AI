@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>StormEye – Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    .legend {
+      background: white; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.2); line-height: 1.2;
+    }
+    .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
+    .minor { background:#2ecc71; }
+    .moderate { background:#f1c40f; }
+    .major { background:#e74c3c; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    // Initial view (UCF area)
+    const map = L.map('map', { zoomControl: true }).setView([28.6024, -81.2001], 13);
+
+    // OSM tiles
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Simple legend
+    const legend = L.control({ position: 'topright' });
+    legend.onAdd = function () {
+      const div = L.DomUtil.create('div', 'legend');
+      div.innerHTML = `
+        <div><span class="dot minor"></span>Minor</div>
+        <div><span class="dot moderate"></span>Moderate</div>
+        <div><span class="dot major"></span>Major</div>
+      `;
+      return div;
+    };
+    legend.addTo(map);
+
+    // Marker bookkeeping
+    const markersById = new Map();
+
+    function iconFor(sev) {
+      const color = sev === 'major' ? 'red' : (sev === 'moderate' ? 'orange' : 'green');
+      return L.icon({
+        iconUrl:
+          `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
+        iconSize: [25, 41],
+        iconAnchor: [12, 41],
+        popupAnchor: [1, -34],
+        shadowUrl:
+          'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+        shadowSize: [41, 41]
+      });
+    }
+
+    async function refreshPoints() {
+      try {
+        const res = await fetch('/map/coords'); // later: pass ?source=drone
+        const data = await res.json();
+
+        const idsSeen = new Set();
+
+        for (const p of data.points) {
+          idsSeen.add(p.id);
+          if (!markersById.has(p.id)) {
+            const m = L.marker([p.lat, p.lon], { icon: iconFor(p.severity) })
+              .bindPopup(
+                `<b>Damage point #${p.id}</b><br/>Severity: ${p.severity}<br/>` +
+                `(${p.lat.toFixed(5)}, ${p.lon.toFixed(5)})`
+              )
+              .addTo(map);
+            markersById.set(p.id, m);
+          } else {
+            const m = markersById.get(p.id);
+            m.setLatLng([p.lat, p.lon]);
+            m.setIcon(iconFor(p.severity));
+          }
+        }
+
+        // Remove markers not returned this cycle (optional)
+        for (const [id, m] of markersById.entries()) {
+          if (!idsSeen.has(id)) {
+            map.removeLayer(m);
+            markersById.delete(id);
+          }
+        }
+      } catch (e) {
+        console.error('refreshPoints failed:', e);
+      }
+    }
+
+    refreshPoints();
+    setInterval(refreshPoints, 3000);
+  </script>
+</body>
+</html>
