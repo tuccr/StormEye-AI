@@ -2,7 +2,7 @@
 set -e
 
 # --- Activate virtual environment ---
-source venv/bin/activate
+#source venv/bin/activate
 
 # --- Start FastAPI backend in background ---
 echo "Starting backend..."
