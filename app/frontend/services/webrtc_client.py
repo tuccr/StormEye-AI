@@ -9,34 +9,48 @@ class WebRTCClient:
     def __init__(self, video_label):
         self.video_label = video_label
         self.pc = RTCPeerConnection()
+        self._connecting = False
+
+    async def close(self):
+        try:
+            if self.pc and self.pc.connectionState != "closed":
+                await self.pc.close()
+        except Exception:
+            pass
 
     async def start_connection(self):
-        self.pc.addTransceiver("video", direction="recvonly")
+        if self._connecting:
+            return
+        self._connecting = True
+        try:
+            self.pc.addTransceiver("video", direction="recvonly")
 
-        @self.pc.on("track")
-        async def on_track(track):
-            while True:
-                frame = await track.recv()
-                await asyncio.sleep(0.03)
-                self._update_video_label(frame)
+            @self.pc.on("track")
+            async def on_track(track):
+                while True:
+                    frame = await track.recv()
+                    await asyncio.sleep(0.03)
+                    self._update_video_label(frame)
 
-        async with aiohttp.ClientSession() as session:
-            offer = await self.pc.createOffer()
-            await self.pc.setLocalDescription(offer)
+            async with aiohttp.ClientSession() as session:
+                offer = await self.pc.createOffer()
+                await self.pc.setLocalDescription(offer)
 
-            async with session.post("http://127.0.0.1:8000/webrtc/offer", json={
-                "sdp": self.pc.localDescription.sdp,
-                "type": self.pc.localDescription.type
-            }) as resp:
-                if resp.status != 200:
-                    return
-                answer = await resp.json(content_type=None)
+                async with session.post(
+                    "http://127.0.0.1:8000/webrtc/offer",
+                    json={"sdp": self.pc.localDescription.sdp,
+                          "type": self.pc.localDescription.type}
+                ) as resp:
+                    if resp.status != 200:
+                        return
+                    answer = await resp.json(content_type=None)
 
             await self.pc.setRemoteDescription(
                 RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
             )
-
-        print("WebRTC connection established.")
+            print("WebRTC connection established.")
+        finally:
+            self._connecting = False
 
     def _update_video_label(self, frame):
         img = frame.to_ndarray(format="bgr24")

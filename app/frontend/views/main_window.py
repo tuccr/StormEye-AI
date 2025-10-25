@@ -15,45 +15,42 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
 
-        # --- Add a webview for the map (hidden by default) ---
         self.webView = QWebEngineView(self)
         self.webView.setVisible(False)
-        # put webView in the same slot as the video (left side)
-        # index 0 is the left widget in your HBox; insert at 0 with same stretch=2
         self.ui.videoReportLayout.insertWidget(0, self.webView, 2)
 
-        # WebRTC client draws into ui.videoLabel
         self.webrtc_client = WebRTCClient(self.ui.videoLabel)
-        #FastAPI loads Leaflet map
+
         self.webView.load(QUrl("http://127.0.0.1:8000/map"))
-        # ---------- handlers ---------------
+
+        # connect signals ONCE
         self.ui.btnLiveFeed.clicked.connect(self.on_connect_clicked)
         self.ui.btn3DMap.clicked.connect(self.on_map_view_clicked)
 
+    async def _reset_webrtc(self):
+        if self.webrtc_client:
+            await self.webrtc_client.close()
+
+        self.webrtc_client = WebRTCClient(self.ui.videoLabel)
+
     def on_connect_clicked(self):
-        # toggle buttons
+
         self.ui.btnLiveFeed.setEnabled(False)
         self.ui.btn3DMap.setEnabled(True)
-
-        # show video, hide map
         self.webView.setVisible(False)
         self.ui.videoLabel.setVisible(True)
 
-        asyncio.create_task(self.webrtc_client.start_connection())
+        asyncio.create_task(self._start_fresh_connection())
+
+    async def _start_fresh_connection(self):
+        await self._reset_webrtc()
+        await self.webrtc_client.start_connection()
 
     def on_map_view_clicked(self):
         self.ui.btn3DMap.setEnabled(False)
         self.ui.btnLiveFeed.setEnabled(True)
-
-        # hide video, show map
         self.ui.videoLabel.clear()
         self.ui.videoLabel.setVisible(False)
         self.webView.setVisible(True)
 
-        self.webrtc_client = WebRTCClient(self.ui.videoLabel)
-        self.ui.btnLiveFeed.clicked.connect(self.on_connect_clicked)
-
-    def on_connect_clicked(self):
-        self.ui.btnLiveFeed.setEnabled(False)
-        asyncio.create_task(self.webrtc_client.start_connection())
-
+        asyncio.create_task(self.webrtc_client.close())
