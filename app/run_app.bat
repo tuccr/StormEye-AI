@@ -1,5 +1,4 @@
 @echo off
-call .venv\Scripts\activate
 
 echo Starting FastAPI backend...
 start cmd /k "uvicorn backend.main:app --ws-max-size 3500000 --port 8000"
