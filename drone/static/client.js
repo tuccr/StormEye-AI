@@ -23,4 +23,8 @@ async function start() {
   await pc.setRemoteDescription(answer);
 }
 
+/*
+ * TODO: Create listener here to release the VideoCapture on exit and make sure we can access the camera feed when we re-enter the webpage. May not need this but depends on approach taken in ../server.py
+ */
+
 start();
