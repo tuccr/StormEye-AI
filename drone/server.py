@@ -54,7 +54,11 @@ class CameraVideoTrack(VideoStreamTrack):
         self.cap = cv2.VideoCapture(0)  # Use Pi Camera or USB cam
         if not self.cap.isOpened():
             raise RuntimeError("Could not open video device")
-
+            
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)  # Set width
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)  # Set height
+        self.cap.set(cv2.CAP_PROP_FPS, 60)             # Set framerate
+	
     async def recv(self):
         pts, time_base = await self.next_timestamp()
         ret, frame = self.cap.read()
