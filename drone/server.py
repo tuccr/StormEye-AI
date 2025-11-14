@@ -29,6 +29,8 @@ This python script is linked with WebRTCStream.service, so that service will run
 	- /home/test/vid2_server/.venv/bin/python /home/test/vid2_server/server.py
 """
 
+logging.basicConfig(level=logging.INFO)
+pcs = set()
 
 ### ---- WebRTC Handlers ---- ###
 async def offer(request):
