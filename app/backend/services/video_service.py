@@ -47,7 +47,7 @@ from backend.services.model_service import model, tfs, postprocess, avatextaug
     
 class InferenceVideoTrack(VideoCameraTrack):
     """Video stream that runs model inference on frames."""
-    def __init__(self, video_path=None, actions=None, thresh=0.25):
+    def __init__(self, video_path=None, actions=None, thresh=0.25, send_data_func = None):
         super().__init__(video_path)
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.captions = [a.replace('_', ' ') for a in actions] if actions else list(avatextaug.keys())
@@ -58,6 +58,7 @@ class InferenceVideoTrack(VideoCameraTrack):
         self.buffer_max_len = 72
         self.mididx = self.buffer_max_len // 2
         self.imgsize = (240, 320)
+        self.send_data_func = send_data_func
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
@@ -78,7 +79,9 @@ class InferenceVideoTrack(VideoCameraTrack):
                 outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ self.text_embeds.T
                 result = postprocess(outputs, (480, 640), human_conf=0.0, thresh=self.thresh)[0]
                 result['text_labels'] = [[self.captions[e] for e in ele] for ele in result['labels']]
-                frame = self._draw_boxes(frame, result)
+                frame, box_data = self._draw_boxes_get_data(frame, result)
+                if self.send_data_func:
+                    self.send_data_func(box_data)
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
@@ -86,8 +89,9 @@ class InferenceVideoTrack(VideoCameraTrack):
         video_frame.time_base = time_base
         return video_frame
 
-    def _draw_boxes(self, frame, result):
+    def _draw_boxes_get_data(self, frame, result):
         boxes, labels, scores = result['boxes'], result['text_labels'], result['scores']
+        box_data = []
         for j in range(len(boxes)):
             box = boxes[j].cpu().detach().numpy().astype(int)
             label = labels[j]
@@ -100,5 +104,10 @@ class InferenceVideoTrack(VideoCameraTrack):
                 text = f"{label[k]} {round(score[k].item(), 2)}"
                 cv2.putText(frame, text, (box[0], box[1] + offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                 offset += 20
-        return frame
+            box_data.append({
+                "box": [int(b) for b in box],
+                "labels": label,
+                "scores": [float(s) for s in score]
+            })
+        return frame,box_data
 

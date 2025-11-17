@@ -4,15 +4,31 @@ from fastapi.responses import JSONResponse
 from ..models.webrtc_models import Offer
 from ...services.video_service import VideoCameraTrack, InferenceVideoTrack
 from ...config.settings import DEFAULT_VIDEO_PATH
+import json
 
 async def handle_offer(request: Offer):
     try:
         pc = RTCPeerConnection()
 
+        data_channel_holder = [None]
+
+        @pc.on("datachannel")
+        def on_datachannel(channel):
+            data_channel_holder[0] = channel
+
+        def send_data(data):
+            channel = data_channel_holder[0]
+            if channel and channel.readyState == "open":
+                channel.send(json.dumps(data))
+
         mode = "inference"
         thresh = 0.25
         if mode == "inference":
-            video_track = InferenceVideoTrack(video_path=DEFAULT_VIDEO_PATH, thresh=thresh)
+            video_track = InferenceVideoTrack(
+                video_path=DEFAULT_VIDEO_PATH,
+                thresh=thresh,
+                send_data_func=send_data
+            )
         else:
             video_track = VideoCameraTrack(video_path=DEFAULT_VIDEO_PATH)
 
