@@ -30,6 +30,7 @@ class WebRTCClient:
                     frame = await track.recv()
                     await asyncio.sleep(0.03)
                     await asyncio.sleep(0.03)
+                    await asyncio.sleep(0.03) #bug fix
                     self._update_video_label(frame)
             except Exception as e:
                 print(f"Track stopped: {e}")

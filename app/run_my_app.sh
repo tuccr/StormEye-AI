@@ -46,5 +46,3 @@ python frontend/main.py || true
 # --- Wait for cleanup when frontend closes ---
 cleanup
 
-
-
