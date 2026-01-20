@@ -2,7 +2,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaBlackhole
 from fastapi.responses import JSONResponse
 from ..models.webrtc_models import Offer
-from ...services.video_service import VideoCameraTrack, InferenceVideoTrack
+from ...services.video_service import VideoCameraTrack, InferenceVideoTrack, PiStreamTrack
 from ...config.settings import DEFAULT_VIDEO_PATH
 
 async def handle_offer(request: Offer):
@@ -12,9 +12,10 @@ async def handle_offer(request: Offer):
         mode = "inference"
         thresh = 0.25
         if mode == "inference":
-            video_track = InferenceVideoTrack(video_path=DEFAULT_VIDEO_PATH, thresh=thresh)
+            video_track = InferenceVideoTrack(thresh=thresh)
         else:
-            video_track = VideoCameraTrack(video_path=DEFAULT_VIDEO_PATH)
+            #video_track = VideoCameraTrack(video_path=DEFAULT_VIDEO_PATH)
+            video_track = PiStreamTrack()
 
         pc.addTrack(video_track)
 
