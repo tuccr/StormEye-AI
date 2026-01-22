@@ -6,6 +6,7 @@ from ...services.video_service import VideoCameraTrack, InferenceVideoTrack, PiS
 from ...config.settings import DEFAULT_VIDEO_PATH
 from aiortc import RTCRtpSender
 from aiortc.rtcrtpparameters import RTCRtpCodecCapability
+import json
 
 async def handle_offer(request: Offer):
     try:
