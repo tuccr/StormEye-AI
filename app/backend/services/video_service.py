@@ -54,7 +54,7 @@ import av
 
 class InferenceVideoTrack(VideoStreamTrack):
     """Video stream that runs model inference on frames from Pi stream."""
-    def __init__(self, actions=None, thresh=0.25):
+    def __init__(self, actions=None, thresh=0.25, send_data_func = None):
         super().__init__()
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.captions = [a.replace('_', ' ') for a in actions] if actions else list(avatextaug.keys())
@@ -65,6 +65,7 @@ class InferenceVideoTrack(VideoStreamTrack):
         self.buffer_max_len = 72
         self.mididx = self.buffer_max_len // 2
         self.imgsize = (240, 320)
+        self.send_data_func = send_data_func
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
@@ -91,12 +92,17 @@ class InferenceVideoTrack(VideoStreamTrack):
                 outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ self.text_embeds.T
                 result = postprocess(outputs, (480, 640), human_conf=0.0, thresh=self.thresh)[0]
                 result['text_labels'] = [[self.captions[e] for e in ele] for ele in result['labels']]
-                frame = self._draw_boxes(frame, result)
+                #frame = self._draw_boxes(frame, result)
+                print("predictions made")
+                box_data = self._get_data(result)
+                if self.send_data_func:
+                    self.send_data_func(box_data)
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
         video_frame.pts = pts
         video_frame.time_base = time_base
+        print("frame returned")
         return video_frame
 
     def _draw_boxes(self, frame, result):
@@ -123,6 +129,22 @@ class InferenceVideoTrack(VideoStreamTrack):
                 y_offset += 22
 
         return draw
+
+    def _get_data(self, result):
+        boxes, labels, scores = result['boxes'], result['text_labels'], result['scores']
+        box_data = []
+        for j in range(len(boxes)):
+            box = boxes[j].cpu().detach().numpy().astype(int)
+            label = labels[j]
+            score = scores[j]
+            print("getting data")
+
+            box_data.append({
+                "box": [int(b) for b in box],
+                "labels": label,
+                "scores": [float(s) for s in score]
+            })
+        return box_data
 
 import av
 from aiortc import VideoStreamTrack

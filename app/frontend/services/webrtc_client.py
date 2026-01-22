@@ -4,12 +4,16 @@ import aiohttp
 import cv2
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from PyQt6 import QtGui, QtCore
+from PyQt6.QtGui import QPainter, QColor, QFont, QPen
+import json
+from PyQt6.QtCore import Qt
 
 class WebRTCClient:
     def __init__(self, video_label):
         self.video_label = video_label
         self.pc = None
         self.track_task = None
+        self.box_data = []
 
     async def start_connection(self):
         # Close previous connection if exists
@@ -25,9 +29,26 @@ class WebRTCClient:
                 while True:
                     frame = await track.recv()
                     await asyncio.sleep(0.03) #bug fix
+                    await asyncio.sleep(0.03)
                     self._update_video_label(frame)
             except Exception as e:
                 print(f"Track stopped: {e}")
+
+        # lucas change
+        data_channel = self.pc.createDataChannel("data")
+
+        @data_channel.on("open")
+        def on_open():
+            print("Data channel is open")
+
+        @data_channel.on("message")
+        def on_message(message):
+            try:
+                self.box_data = json.loads(message)
+            except json.JSONDecodeError:
+                print("failed to recieve JSON message")
+                self.box_data = []
+        # end
 
         # Create offer and set as local description
         offer = await self.pc.createOffer()
@@ -63,6 +84,7 @@ class WebRTCClient:
             await self.pc.close()
             self.pc = None
             self.video_label.clear()
+            self.box_data = []
             print("WebRTC connection closed.")
 
     def _update_video_label(self, frame):
@@ -74,6 +96,35 @@ class WebRTCClient:
             img.data, w, h, bytes_per_line, QtGui.QImage.Format.Format_RGB888
         )
         pixmap = QtGui.QPixmap.fromImage(qt_image)
+        
+        #lucas changes
+        painter = QPainter(pixmap)
+        print(self.box_data)
+        if self.box_data:
+            for data in self.box_data:
+                box = data.get('box')
+                if not box:
+                    continue
+                
+                labels = data.get('labels',[])
+                scores = data.get('scores',[])
+                x1, y1, x2, y2 = [int (c) for c in box]
+
+                pen = QPen(QColor(255, 0, 0), 2)
+                painter.setPen(pen)
+                painter.drawRect(x1, y1, x2 - x1, y2 - y1)
+
+                # Prepare and draw the label
+                if labels and scores:
+                    label_text = f"{labels[0]}: {scores[0]:.2f}"
+                    font = QFont("Arial", 12)
+                    painter.setFont(font)
+                    painter.setPen(QColor(255, 0, 0))
+                    painter.drawText(x1, y1 - 10, label_text)
+        painter.end()
+        
+        #end
+
         scaled_pixmap = pixmap.scaled(
             640,
             480,
