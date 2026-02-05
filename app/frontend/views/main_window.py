@@ -6,12 +6,16 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from ui.main_ui import Ui_MainWindow
 from services.webrtc_client import WebRTCClient
+from PyQt6.QtWidgets import QSizePolicy
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self.ui.videoLabel.setMinimumSize(640, 480)
+        self.ui.videoLabel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.ui.videoLabel.setScaledContents(False)
 
         # --- Add a webview for the map (hidden by default) ---
         self.webView = QWebEngineView(self)
