@@ -36,6 +36,8 @@ class MainWindow(QtWidgets.QMainWindow):
     async def _connect_webrtc(self):
         self.ui.btnLiveFeed.setEnabled(False)
         self.ui.btn3DMap.setEnabled(True)
+        self.ui.connectionStatus.setStyleSheet("color: yellow; font-size: 16px;")
+        self.ui.connectionActualStatus.setText("Pending")
 
         # show video, hide map
         self.webView.setVisible(False)
@@ -44,6 +46,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Close any previous connection before starting a new one
         await self.webrtc_client.close_connection()
         await self.webrtc_client.start_connection()
+
+        self.ui.connectionStatus.setStyleSheet("color: green; font-size: 16px;")
+        self.ui.connectionActualStatus.setText("Active")
 
     def on_map_view_clicked(self):
         # schedule the async function properly
