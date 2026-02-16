@@ -55,8 +55,14 @@ class Ui_MainWindow(object):
         self.sidebarLayout.addStretch(1)
 
         # Control Buttons
+        self.btnAIToggle = QtWidgets.QPushButton("AI: ON")
+        self.btnAIToggle.setCheckable(True)
+        self.btnAIToggle.setChecked(True)
+
         self.btnDataStream = QtWidgets.QPushButton("Start/Stop Data Stream")
         self.btnUploadData = QtWidgets.QPushButton("Upload Data")
+
+        self.sidebarLayout.addWidget(self.btnAIToggle)
         self.sidebarLayout.addWidget(self.btnDataStream)
         self.sidebarLayout.addWidget(self.btnUploadData)
 
@@ -140,4 +146,3 @@ class Ui_MainWindow(object):
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "StormEye AI"))
-

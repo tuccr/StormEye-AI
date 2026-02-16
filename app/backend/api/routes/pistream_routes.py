@@ -131,11 +131,7 @@ async def connect_webrtc():
             print("⚠️ Pi WebRTC disconnected/stalled — reconnecting...")
 
         except Exception as e:
-            import traceback
             print(f"❌ WebRTC error: {e}")
-            print(f"Type: {type(e)}")
-            print(f"Repr: {repr(e)}")
-            traceback.print_exc()
 
         finally:
             # Stop background tasks
