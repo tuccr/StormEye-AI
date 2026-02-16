@@ -1,104 +1,359 @@
+# backend/services/video_service.py
+
 import os
+import asyncio
+from typing import Callable, Optional, Any, List, Dict, Tuple
+from collections import deque
+
 import cv2
 import numpy as np
+import av
 from aiortc import VideoStreamTrack
 from av import VideoFrame
 
+import torch
+import torch.nn.functional as F
+
+from backend.services.model_service import model, tfs, postprocess, avatextaug
+from backend.api.routes.pistream_routes import frame_queue
+
+
+async def _get_latest_frame(timeout_s: float = 1.0) -> Optional[np.ndarray]:
+    """
+    Try to get a frame from the Pi queue without blocking forever.
+    Returns None on timeout.
+    """
+    try:
+        return await asyncio.wait_for(frame_queue.get(), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return None
+
+
 class VideoCameraTrack(VideoStreamTrack):
-    def __init__(self, video_path=None):
+    """
+    Simple video track that either plays from a file or generates random frames.
+    (Useful for local testing when no Pi stream is present.)
+    """
+
+    def __init__(self, video_path: Optional[str] = None):
         super().__init__()
         if video_path and os.path.exists(video_path):
             self.cap = cv2.VideoCapture(video_path)
         else:
             self.cap = None
 
-    async def recv(self):
-        pts, time_base = await self.next_timestamp()
-
+    def _read_frame(self) -> np.ndarray:
         if self.cap:
             ret, frame = self.cap.read()
             if not ret:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 ret, frame = self.cap.read()
-            frame = cv2.resize(frame, (640, 480))
+
+            if ret and frame is not None:
+                frame = cv2.resize(frame, (640, 480))
+            else:
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
         else:
             frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
-        video_frame.pts = pts
-        video_frame.time_base = time_base
-        return video_frame
-
-    def _read_frame(self):
-        if self.cap:
-            ret, frame = self.cap.read()
-            if not ret:
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                ret, frame = self.cap.read()
-            frame = cv2.resize(frame, (640, 480)) if ret else np.zeros((480, 640, 3), dtype=np.uint8)
-        else:
-            frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
         return frame
 
-import torch
-import torch.nn.functional as F
-from backend.services.model_service import model, tfs, postprocess, avatextaug
-    
-class InferenceVideoTrack(VideoCameraTrack):
-    """Video stream that runs model inference on frames."""
-    def __init__(self, video_path=None, actions=None, thresh=0.25):
-        super().__init__(video_path)
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        self.captions = [a.replace('_', ' ') for a in actions] if actions else list(avatextaug.keys())
-        self.text_embeds = model.encode_text(self.captions)
-        self.text_embeds = F.normalize(self.text_embeds, dim=-1)
-        self.thresh = thresh
-        self.buffer = []
-        self.buffer_max_len = 72
-        self.mididx = self.buffer_max_len // 2
-        self.imgsize = (240, 320)
-
-    async def recv(self):
+    async def recv(self) -> VideoFrame:
         pts, time_base = await self.next_timestamp()
-        frame = self._read_frame()
 
-        # Store in buffer
-        raw_frame = cv2.resize(frame, (self.imgsize[1], self.imgsize[0]))
-        self.buffer.append(raw_frame.transpose(2, 0, 1))
-        if len(self.buffer) > self.buffer_max_len:
-            _ = self.buffer.pop(0)
+        frame_bgr = self._read_frame()
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-        # Only run inference once buffer fills
-        if len(self.buffer) == self.buffer_max_len:
-            with torch.no_grad():
-                clip = torch.tensor(np.array(self.buffer)[0:self.buffer_max_len:self.buffer_max_len // 9]) / 255
-                clip = tfs(clip)
-                outputs = model.encode_vision(clip.unsqueeze(0).to(self.device))
-                outputs['pred_logits'] = F.normalize(outputs['pred_logits'], dim=-1) @ self.text_embeds.T
-                result = postprocess(outputs, (480, 640), human_conf=0.0, thresh=self.thresh)[0]
-                result['text_labels'] = [[self.captions[e] for e in ele] for ele in result['labels']]
-                frame = self._draw_boxes(frame, result)
-
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
+        video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
         video_frame.pts = pts
         video_frame.time_base = time_base
         return video_frame
 
-    def _draw_boxes(self, frame, result):
-        boxes, labels, scores = result['boxes'], result['text_labels'], result['scores']
+
+class PiStreamTrack(VideoStreamTrack):
+    """
+    Sends frames directly from the Pi frame_queue to the peer (no inference).
+
+    Key reliability improvement:
+    - Never block forever waiting for a frame.
+    - If the Pi stops sending temporarily, keep streaming the last frame.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._last = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    async def recv(self) -> av.VideoFrame:
+        pts, time_base = await self.next_timestamp()
+
+        frame = await _get_latest_frame(timeout_s=1.0)
+        if frame is None:
+            frame = self._last
+        else:
+            self._last = frame
+
+        new_frame = av.VideoFrame.from_ndarray(frame, format="bgr24")
+        new_frame.pts = pts
+        new_frame.time_base = time_base
+        return new_frame
+
+
+class InferenceVideoTrack(VideoStreamTrack):
+    """
+    Video stream that runs model inference on frames from the Pi stream.
+
+    IMPORTANT:
+    - recv() must be fast. We DO NOT run inference inside recv().
+    - When the buffer is full, we spawn a background task to run inference.
+    - The video stream continues smoothly while inference runs.
+
+    Reliability improvements:
+    - Never block forever if Pi frames stop (timeout + last frame).
+    - postprocess uses the REAL output frame size (fixes drift).
+
+    NEW:
+    - ai_enabled and overlay_enabled can be toggled LIVE (without restarting WebRTC).
+    """
+
+    def __init__(
+        self,
+        actions: Optional[List[str]] = None,
+        thresh: float = 0.25,
+        send_data_func: Optional[Callable[[Any], Any]] = None,
+        ai_enabled: bool = True,
+        overlay_enabled: bool = True,
+    ):
+        super().__init__()
+
+        # Runtime toggles (can be changed live via DataChannel)
+        self.ai_enabled: bool = bool(ai_enabled)
+        self.overlay_enabled: bool = bool(overlay_enabled)
+        # Used to avoid spamming empty overlay messages
+        self._sent_overlay_clear: bool = False
+
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+        self.captions = (
+            [a.replace("_", " ") for a in actions]
+            if actions
+            else list(avatextaug.keys())
+        )
+
+        # Precompute and normalize text embeddings once
+        self.text_embeds = model.encode_text(self.captions)
+        self.text_embeds = F.normalize(self.text_embeds, dim=-1)
+
+        self.thresh = thresh
+
+        # Buffer settings
+        self.buffer_max_len = 72  # adjust as needed
+        self.buffer = deque(maxlen=self.buffer_max_len)  # stores (C,H,W) uint8 numpy arrays
+        self.imgsize = (240, 320)  # (h, w) used for buffering only
+
+        # ---- Preallocate inference tensors (reused every run) ----
+        # We sample 9 frames from the 72-frame buffer at a fixed stride.
+        step = max(1, self.buffer_max_len // 9)  # 72//9 = 8 -> indices 0..64
+        self._sample_idx = list(range(0, self.buffer_max_len, step))[:9]
+
+        H, W = self.imgsize  # (h,w)
+        self._use_cuda = torch.cuda.is_available() and (self.device.startswith("cuda"))
+        self._clip_cpu = torch.empty(
+            (9, 3, H, W),
+            dtype=torch.float32,
+            pin_memory=self._use_cuda,  # enables non_blocking H2D copies
+        )
+        # Keep a persistent GPU tensor to avoid allocating every inference call.
+        gpu_dtype = torch.float16 if self._use_cuda else torch.float32
+        self._clip_gpu = torch.empty((9, 3, H, W), device=self.device, dtype=gpu_dtype)
+
+        # Keep text embeddings on the same device/dtype as the vision logits we will matmul with.
+        # This avoids Half vs Float dtype mismatches when using AMP / float16 inference.
+        self.text_embeds = self.text_embeds.to(device=self.device, dtype=gpu_dtype)
+
+        # Manual Normalize constants (ImageNet) for in-place normalization on GPU
+        self._norm_mean = torch.tensor([0.485, 0.456, 0.406], device=self.device, dtype=gpu_dtype).view(1, 3, 1, 1)
+        self._norm_std  = torch.tensor([0.229, 0.224, 0.225], device=self.device, dtype=gpu_dtype).view(1, 3, 1, 1)
+
+        # Optional AMP for speed on CUDA
+        self._use_amp = self._use_cuda and (gpu_dtype == torch.float16)
+
+        # Callback to send inference results (boxes/labels/scores) to client overlay
+        self.send_data_func = send_data_func
+
+        # Background inference control
+        self._infer_task: Optional[asyncio.Task] = None
+        self._infer_lock = asyncio.Lock()
+
+        # Last-good frame fallback for streaming continuity
+        self._last = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        # Track real output size of the outgoing frames (h, w) for correct postprocess mapping
+        self.out_size: Tuple[int, int] = (480, 640)
+
+    def set_ai_enabled(self, enabled: bool) -> None:
+        """Enable/disable AI inference without stopping the video stream."""
+        enabled = bool(enabled)
+        if self.ai_enabled == enabled:
+            return
+        self.ai_enabled = enabled
+
+        # If turning AI off, stop any in-flight inference work and reset buffer
+        if not self.ai_enabled:
+            try:
+                if self._infer_task and not self._infer_task.done():
+                    self._infer_task.cancel()
+            except Exception:
+                pass
+            self.buffer.clear()
+            # ensure client clears boxes when AI is switched off
+            self._sent_overlay_clear = False
+
+    def set_overlay_enabled(self, enabled: bool) -> None:
+        """Enable/disable overlay JSON sending (does not affect video stream)."""
+        enabled = bool(enabled)
+        if self.overlay_enabled == enabled:
+            return
+        self.overlay_enabled = enabled
+
+        # If turning overlay off, send a one-time empty payload so the client clears boxes
+        if not self.overlay_enabled:
+            self._sent_overlay_clear = False
+
+    async def recv(self) -> VideoFrame:
+        pts, time_base = await self.next_timestamp()
+
+        # Pull next frame from Pi queue, but don't stall forever
+        frame = await _get_latest_frame(timeout_s=1.0)
+        if frame is None:
+            frame = self._last
+        else:
+            self._last = frame
+
+        # Update output size (h, w) to match actual stream frames
+        h, w = frame.shape[:2]
+        self.out_size = (h, w)
+
+        # Build buffer for inference only when AI is enabled
+        if self.ai_enabled:
+            small = cv2.resize(frame, (self.imgsize[1], self.imgsize[0]))
+            self.buffer.append(small.transpose(2, 0, 1))  # (C,H,W) uint8
+
+            # If buffer full, start inference in the background (do not block recv)
+            if len(self.buffer) == self.buffer_max_len:
+                if self._infer_task is None or self._infer_task.done():
+                    frames_snapshot = list(self.buffer)
+                    out_size_snapshot = self.out_size  # (h,w)
+                    self._infer_task = asyncio.create_task(
+                        self._run_inference(frames_snapshot, out_size_snapshot)
+                    )
+        else:
+            # If AI is disabled, make sure buffer doesn't grow and clear overlay once
+            if self.buffer:
+                self.buffer.clear()
+
+            # Send an empty payload once so client clears any stale boxes
+            if self.send_data_func and not self._sent_overlay_clear:
+                try:
+                    payload: List[Dict[str, Any]] = []
+                    if asyncio.iscoroutinefunction(self.send_data_func):
+                        await self.send_data_func(payload)
+                    else:
+                        self.send_data_func(payload)
+                except Exception:
+                    pass
+                self._sent_overlay_clear = True
+
+        # Return the live frame immediately
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
+        video_frame.pts = pts
+        video_frame.time_base = time_base
+        return video_frame
+
+    async def _run_inference(self, frames: List[np.ndarray], out_size: Tuple[int, int]) -> None:
+        """
+        Runs inference on a copy of the buffer and sends results via send_data_func.
+
+        out_size is the (h, w) of the live stream frames the client is viewing.
+        postprocess MUST use that size to produce correctly aligned pixel boxes.
+        """
+        async with self._infer_lock:
+            try:
+                # If AI got toggled off while we were queued, skip quickly
+                if not self.ai_enabled:
+                    return
+
+                # ---- Fill preallocated tensors ----
+                for k, idx in enumerate(self._sample_idx):
+                    self._clip_cpu[k].copy_(torch.from_numpy(frames[idx]), non_blocking=False)
+
+                self._clip_cpu.mul_(1.0 / 255.0)
+
+                self._clip_gpu.copy_(self._clip_cpu, non_blocking=self._use_cuda)
+
+                self._clip_gpu.sub_(self._norm_mean).div_(self._norm_std)
+
+                with torch.no_grad():
+                    if self._use_amp:
+                        with torch.cuda.amp.autocast(dtype=torch.float16):
+                            outputs = model.encode_vision(self._clip_gpu.unsqueeze(0))
+                    else:
+                        outputs = model.encode_vision(self._clip_gpu.unsqueeze(0))
+
+                    pred = outputs["pred_logits"].to(device=self.text_embeds.device, dtype=self.text_embeds.dtype)
+                    outputs["pred_logits"] = F.normalize(pred, dim=-1) @ self.text_embeds.T
+
+                    result = postprocess(
+                        outputs, out_size, human_conf=0.0, thresh=self.thresh
+                    )[0]
+
+                    result["text_labels"] = [
+                        [self.captions[e] for e in ele] for ele in result["labels"]
+                    ]
+
+                box_data = self._get_data(result)
+
+                # Only send overlay data if overlay is enabled at send time
+                if self.send_data_func and self.overlay_enabled:
+                    self._sent_overlay_clear = False
+                    if asyncio.iscoroutinefunction(self.send_data_func):
+                        await self.send_data_func(box_data)
+                    else:
+                        self.send_data_func(box_data)
+
+                # If overlay was disabled, make sure we clear on client once
+                if self.send_data_func and (not self.overlay_enabled) and (not self._sent_overlay_clear):
+                    try:
+                        payload: List[Dict[str, Any]] = []
+                        if asyncio.iscoroutinefunction(self.send_data_func):
+                            await self.send_data_func(payload)
+                        else:
+                            self.send_data_func(payload)
+                    except Exception:
+                        pass
+                    self._sent_overlay_clear = True
+
+            except Exception as e:
+                print(f"❌ Inference task failed: {e}")
+
+    def _get_data(self, result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Converts model output to JSON-serializable overlay data.
+        """
+        boxes, labels, scores = result["boxes"], result["text_labels"], result["scores"]
+
+        box_data: List[Dict[str, Any]] = []
         for j in range(len(boxes)):
             box = boxes[j].cpu().detach().numpy().astype(int)
             label = labels[j]
             score = scores[j]
-            color = (0, 255, 0)
-            start_point, end_point = (box[0], box[1]), (box[2], box[3])
-            cv2.rectangle(frame, start_point, end_point, color, 2)
-            offset = 0
-            for k in range(len(label)):
-                text = f"{label[k]} {round(score[k].item(), 2)}"
-                cv2.putText(frame, text, (box[0], box[1] + offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                offset += 20
-        return frame
 
+            box_data.append(
+                {
+                    "box": [int(b) for b in box],
+                    "labels": label,
+                    "scores": [float(s) for s in score],
+                }
+            )
+
+        return box_data
