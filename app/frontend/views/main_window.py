@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QSizePolicy
 
 from ui.main_ui import Ui_MainWindow
 from services.webrtc_client import WebRTCClient
+from PyQt6.QtWidgets import QSizePolicy
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -14,6 +15,9 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self.ui.videoLabel.setMinimumSize(640, 480)
+        self.ui.videoLabel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.ui.videoLabel.setScaledContents(False)
 
         self.ui.videoLabel.setMinimumSize(640, 480)
         self.ui.videoLabel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -57,12 +61,17 @@ class MainWindow(QtWidgets.QMainWindow):
     async def _connect_webrtc(self):
         self.ui.btnLiveFeed.setEnabled(False)
         self.ui.btn3DMap.setEnabled(True)
+        self.ui.connectionStatus.setStyleSheet("color: yellow; font-size: 16px;")
+        self.ui.connectionActualStatus.setText("Pending")
 
         self.webView.setVisible(False)
         self.ui.videoLabel.setVisible(True)
 
         await self.webrtc_client.close_connection()
         await self.webrtc_client.start_connection()
+
+        self.ui.connectionStatus.setStyleSheet("color: green; font-size: 16px;")
+        self.ui.connectionActualStatus.setText("Active")
 
     def on_map_view_clicked(self):
         asyncio.create_task(self._switch_to_map())
