@@ -23,7 +23,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.videoLabel.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.ui.videoLabel.setScaledContents(False)
 
-        # --- Add a webview for the map (hidden by default) ---
         self.webView = QWebEngineView(self)
         self.webView.setVisible(False)
         self.ui.videoReportLayout.insertWidget(0, self.webView, 2)
@@ -54,6 +53,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Live control message -> backend flips inference on/off instantly
         self.webrtc_client.send_control(ai=self.ai_enabled, overlay=self.ai_enabled)
+
+    async def _reset_webrtc(self):
+        if self.webrtc_client:
+            await self.webrtc_client.close()
+
+        self.webrtc_client = WebRTCClient(self.ui.videoLabel)
 
     def on_connect_clicked(self):
         asyncio.create_task(self._connect_webrtc())
