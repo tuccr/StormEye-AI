@@ -1,13 +1,19 @@
 #!/bin/bash
-set -e
-
-# --- Activate virtual environment ---
-source venv/bin/activate
 
 # --- Start FastAPI backend in background ---
 echo "Starting backend..."
-uvicorn backend.main:app --ws-max-size 3500000 --port 8000 &
+
+# You are already inside "app/", so no need to go up or cd
+# Project structure example:
+# app/
+# ├── backend/
+# └── frontend/
+# └── start.sh   <-- you are here
+
+uvicorn backend.main:app --ws-max-size 3500000 --port 8000 --reload &
+
 BACKEND_PID=$!
+echo "Backend started with PID $BACKEND_PID"
 
 # --- Setup cleanup trap ---
 cleanup() {

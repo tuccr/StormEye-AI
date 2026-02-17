@@ -55,8 +55,14 @@ class Ui_MainWindow(object):
         self.sidebarLayout.addStretch(1)
 
         # Control Buttons
+        self.btnAIToggle = QtWidgets.QPushButton("AI: ON")
+        self.btnAIToggle.setCheckable(True)
+        self.btnAIToggle.setChecked(True)
+
         self.btnDataStream = QtWidgets.QPushButton("Start/Stop Data Stream")
         self.btnUploadData = QtWidgets.QPushButton("Upload Data")
+
+        self.sidebarLayout.addWidget(self.btnAIToggle)
         self.sidebarLayout.addWidget(self.btnDataStream)
         self.sidebarLayout.addWidget(self.btnUploadData)
 
@@ -65,10 +71,30 @@ class Ui_MainWindow(object):
         # ===== Content Area =====
         self.contentLayout = QtWidgets.QVBoxLayout()
 
-        # Connection Status (top right)
-        self.connectionStatus = QtWidgets.QLabel("● Connection Status")
-        self.connectionStatus.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
-        self.contentLayout.addWidget(self.connectionStatus)
+        
+        # Status indicator
+        self.connectionStatus = QtWidgets.QLabel("●")
+        self.connectionStatus.setStyleSheet("color: gray; font-size: 16px;")
+        self.connectionStatus.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
+
+        # Status text
+        self.connectionStatusWord = QtWidgets.QLabel("Connection Status:")
+        self.connectionStatusWord.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
+
+        self.connectionActualStatus = QtWidgets.QLabel("Inctive")
+        self.connectionActualStatus.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
+        # Horizontal layout for the row
+        statusLayout = QtWidgets.QHBoxLayout()
+        statusLayout.addStretch()  # pushes content to the right
+        statusLayout.addWidget(self.connectionStatus)
+        statusLayout.addSpacing(2)
+        statusLayout.addWidget(self.connectionStatusWord)
+        
+        statusLayout.addSpacing(1)
+        statusLayout.addWidget(self.connectionActualStatus)
+
+        # Add the row to your main layout
+        self.contentLayout.addLayout(statusLayout)
 
         # Video + Report section
         self.videoReportLayout = QtWidgets.QHBoxLayout()
@@ -120,4 +146,3 @@ class Ui_MainWindow(object):
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "StormEye AI"))
-
