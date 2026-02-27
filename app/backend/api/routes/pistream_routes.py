@@ -11,6 +11,91 @@ PI_OFFER_URL = os.getenv("PI_OFFER_URL", "http://10.3.141.1:8080/offer")
 # Keep only latest frame
 frame_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
 
+# ----------------------------
+# Flight (backend on/off) state
+# ----------------------------
+
+_FLIGHT_ENABLED: bool = False
+_FLIGHT_EVENT: asyncio.Event = asyncio.Event()
+_FLIGHT_EVENT.clear()  # disabled by default
+
+
+def is_flight_enabled() -> bool:
+    return bool(_FLIGHT_ENABLED)
+
+
+def set_flight_enabled(value: bool) -> None:
+    global _FLIGHT_ENABLED
+    _FLIGHT_ENABLED = bool(value)
+    if _FLIGHT_ENABLED:
+        _FLIGHT_EVENT.set()
+    else:
+        _FLIGHT_EVENT.clear()
+
+
+def flight_enabled_event() -> asyncio.Event:
+    return _FLIGHT_EVENT
+
+
+# ----------------------------
+# Pi connection / media health
+# ----------------------------
+
+# When we last received an actual frame from the Pi ingest PC
+_LAST_PI_FRAME_TS: float = 0.0
+
+# Whether the ingest PC is currently in a "connected/streaming" phase
+_PI_STREAM_OK: bool = False
+
+# How fresh a frame must be to consider Pi "alive"
+_PI_ALIVE_WINDOW_S: float = 2.5  # adjust if needed
+
+
+def mark_pi_frame_received() -> None:
+    global _LAST_PI_FRAME_TS
+    _LAST_PI_FRAME_TS = time.monotonic()
+
+
+def set_pi_stream_ok(value: bool) -> None:
+    global _PI_STREAM_OK
+    _PI_STREAM_OK = bool(value)
+
+
+def is_pi_stream_alive(window_s: float | None = None) -> bool:
+    """
+    True when:
+      - we've successfully connected recently, AND
+      - we've received a frame within the last window_s seconds
+    """
+    if window_s is None:
+        window_s = _PI_ALIVE_WINDOW_S
+    if not _PI_STREAM_OK:
+        return False
+    if _LAST_PI_FRAME_TS <= 0:
+        return False
+    return (time.monotonic() - _LAST_PI_FRAME_TS) <= float(window_s)
+
+
+# Pause control for the Pi ingest loop
+_pause_event = asyncio.Event()
+_pause_event.set()  # not paused initially
+
+
+def pause_pistream():
+    _pause_event.clear()
+    # clear queued frames
+    try:
+        while frame_queue.full():
+            frame_queue.get_nowait()
+    except Exception:
+        pass
+    # Mark pi as not alive when paused
+    set_pi_stream_ok(False)
+
+
+def resume_pistream():
+    _pause_event.set()
+
 
 async def push_frames_to_queue(track, disconnect_event: asyncio.Event, last_frame_ts: dict):
     """
@@ -23,7 +108,10 @@ async def push_frames_to_queue(track, disconnect_event: asyncio.Event, last_fram
             frame: VideoFrame = await track.recv()
             img = frame.to_ndarray(format="bgr24")
 
-            last_frame_ts["t"] = time.monotonic()
+            # Update timestamps
+            t = time.monotonic()
+            last_frame_ts["t"] = t
+            mark_pi_frame_received()
 
             # Keep only the latest frame
             if frame_queue.full():
@@ -61,8 +149,15 @@ async def connect_webrtc():
       - receives track + pushes frames
       - watches connection state + watchdog
       - reconnects on failure
+
+    Respects flight enabled/disabled state and pause state.
+    Also tracks Pi stream health so the frontend can be blocked when Pi is down.
     """
     while True:
+        # Wait until flight enabled AND not paused
+        await _FLIGHT_EVENT.wait()
+        await _pause_event.wait()
+
         pc = None
         disconnect_event = asyncio.Event()
         frame_task = None
@@ -70,6 +165,9 @@ async def connect_webrtc():
 
         # Track last received frame time
         last_frame_ts = {"t": time.monotonic()}
+
+        # assume not OK until proven otherwise
+        set_pi_stream_ok(False)
 
         try:
             pc = RTCPeerConnection()
@@ -80,21 +178,18 @@ async def connect_webrtc():
                 print(f"🎥 Received track: {track.kind}")
                 if track.kind == "video":
                     nonlocal frame_task
-                    # Restart frame task if needed
                     if frame_task and not frame_task.done():
                         frame_task.cancel()
                     frame_task = asyncio.create_task(push_frames_to_queue(track, disconnect_event, last_frame_ts))
 
             @pc.on("connectionstatechange")
             async def on_conn_state():
-                # "new"|"connecting"|"connected"|"disconnected"|"failed"|"closed"
                 print(f"🌐 PC connectionState = {pc.connectionState}")
                 if pc.connectionState in ("failed", "closed", "disconnected"):
                     disconnect_event.set()
 
             @pc.on("iceconnectionstatechange")
             async def on_ice_state():
-                # "new"|"checking"|"connected"|"completed"|"failed"|"disconnected"|"closed"
                 print(f"🧊 ICE state = {pc.iceConnectionState}")
                 if pc.iceConnectionState in ("failed", "disconnected", "closed"):
                     disconnect_event.set()
@@ -118,33 +213,41 @@ async def connect_webrtc():
 
             # 3) Set remote description (answer)
             answer_json = resp.json()
+
+            # If Pi returns malformed JSON (your "'sdp'" issue), fail fast
+            if "sdp" not in answer_json or "type" not in answer_json:
+                raise KeyError("sdp/type missing from Pi answer")
+
             answer = RTCSessionDescription(answer_json["sdp"], answer_json["type"])
             await pc.setRemoteDescription(answer)
 
-            print("✅ Pi WebRTC connected! Streaming video...")
+            # At this point, the signaling succeeded; we still require frames
+            set_pi_stream_ok(True)
+            print("✅ Pi WebRTC signaling complete — waiting for frames...")
 
             # Start watchdog once connected
             watchdog_task = asyncio.create_task(_watchdog(disconnect_event, last_frame_ts, stall_s=3.0))
 
-            # Wait until we detect disconnect (state change OR frame stall OR track error)
-            await disconnect_event.wait()
+            # Keep running until disconnect OR flight ends OR paused
+            while not disconnect_event.is_set():
+                if (not _FLIGHT_EVENT.is_set()) or (not _pause_event.is_set()):
+                    disconnect_event.set()
+                    break
+                await asyncio.sleep(0.2)
+
             print("⚠️ Pi WebRTC disconnected/stalled — reconnecting...")
 
         except Exception as e:
-            import traceback
             print(f"❌ WebRTC error: {e}")
-            print(f"Type: {type(e)}")
-            print(f"Repr: {repr(e)}")
-            traceback.print_exc()
 
         finally:
-            # Stop background tasks
+            set_pi_stream_ok(False)
+
             if watchdog_task and not watchdog_task.done():
                 watchdog_task.cancel()
             if frame_task and not frame_task.done():
                 frame_task.cancel()
 
-            # Close PC
             if pc is not None:
                 try:
                     await pc.close()

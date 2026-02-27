@@ -4,14 +4,19 @@
   <meta charset="UTF-8" />
   <title>StormEye – Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Leaflet CSS (CDN) -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
+
   <style>
     html, body, #map { height: 100%; margin: 0; }
+    body { background: #f2f2f2; } /* ensures not pure white if map fails */
+
     .legend {
       background: white; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px;
       box-shadow: 0 1px 4px rgba(0,0,0,.2); line-height: 1.2;
@@ -20,94 +25,165 @@
     .minor { background:#2ecc71; }
     .moderate { background:#f1c40f; }
     .major { background:#e74c3c; }
+
+    /* Status overlay */
+    #status {
+      position: absolute;
+      z-index: 9999;
+      top: 10px;
+      left: 10px;
+      background: rgba(0,0,0,0.75);
+      color: white;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+      max-width: 420px;
+      line-height: 1.3;
+    }
+    #status.ok { background: rgba(46, 204, 113, 0.85); }
+    #status.warn { background: rgba(241, 196, 15, 0.85); color: #111; }
+    #status.err { background: rgba(231, 76, 60, 0.85); }
   </style>
 </head>
+
 <body>
   <div id="map"></div>
+  <div id="status" class="warn">Loading map…</div>
 
+  <!-- Leaflet JS (CDN) -->
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
   ></script>
+
   <script>
-    // Initial view (UCF area)
-    const map = L.map('map', { zoomControl: true }).setView([28.6024, -81.2001], 13);
+    const statusEl = document.getElementById("status");
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = cls || "warn";
+    }
 
-    // OSM tiles
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+    // If Leaflet didn't load (common cause of "white page" in QtWebEngine)
+    if (typeof window.L === "undefined") {
+      setStatus(
+        "Leaflet failed to load. This usually means QtWebEngine cannot reach unpkg.com (network/SSL/firewall). Check the Python console for errors.",
+        "err"
+      );
+      // Still log a useful error
+      console.error("Leaflet (window.L) is undefined. CDN load likely failed.");
+    } else {
+      // Initial view (UCF area)
+      const map = L.map('map', { zoomControl: true }).setView([28.6024, -81.2001], 13);
 
-    // Simple legend
-    const legend = L.control({ position: 'topright' });
-    legend.onAdd = function () {
-      const div = L.DomUtil.create('div', 'legend');
-      div.innerHTML = `
-        <div><span class="dot minor"></span>Minor</div>
-        <div><span class="dot moderate"></span>Moderate</div>
-        <div><span class="dot major"></span>Major</div>
-      `;
-      return div;
-    };
-    legend.addTo(map);
-
-    // Marker bookkeeping
-    const markersById = new Map();
-
-    function iconFor(sev) {
-      const color = sev === 'major' ? 'red' : (sev === 'moderate' ? 'orange' : 'green');
-      return L.icon({
-        iconUrl:
-          `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
-        iconSize: [25, 41],
-        iconAnchor: [12, 41],
-        popupAnchor: [1, -34],
-        shadowUrl:
-          'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-        shadowSize: [41, 41]
+      // OSM tiles (this also requires internet)
+      const tiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
       });
-    }
 
-    async function refreshPoints() {
-      try {
-        const res = await fetch('/map/coords'); // later: pass ?source=drone
-        const data = await res.json();
+      tiles.on('tileerror', function(e) {
+        console.error("Tile load error:", e);
+        setStatus(
+          "Map tiles failed to load (OpenStreetMap unreachable). You may be offline or blocked. Markers can still update once data is available.",
+          "warn"
+        );
+      });
 
-        const idsSeen = new Set();
+      tiles.addTo(map);
 
-        for (const p of data.points) {
-          idsSeen.add(p.id);
-          if (!markersById.has(p.id)) {
-            const m = L.marker([p.lat, p.lon], { icon: iconFor(p.severity) })
-              .bindPopup(
-                `<b>Damage point #${p.id}</b><br/>Severity: ${p.severity}<br/>` +
-                `(${p.lat.toFixed(5)}, ${p.lon.toFixed(5)})`
-              )
-              .addTo(map);
-            markersById.set(p.id, m);
-          } else {
-            const m = markersById.get(p.id);
-            m.setLatLng([p.lat, p.lon]);
-            m.setIcon(iconFor(p.severity));
-          }
-        }
+      // Simple legend
+      const legend = L.control({ position: 'topright' });
+      legend.onAdd = function () {
+        const div = L.DomUtil.create('div', 'legend');
+        div.innerHTML = `
+          <div><span class="dot minor"></span>Minor</div>
+          <div><span class="dot moderate"></span>Moderate</div>
+          <div><span class="dot major"></span>Major</div>
+        `;
+        return div;
+      };
+      legend.addTo(map);
 
-        // Remove markers not returned this cycle (optional)
-        for (const [id, m] of markersById.entries()) {
-          if (!idsSeen.has(id)) {
-            map.removeLayer(m);
-            markersById.delete(id);
-          }
-        }
-      } catch (e) {
-        console.error('refreshPoints failed:', e);
+      // Marker bookkeeping
+      const markersById = new Map();
+
+      function iconFor(sev) {
+        const color = sev === 'major' ? 'red' : (sev === 'moderate' ? 'orange' : 'green');
+        return L.icon({
+          iconUrl:
+            `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
+          iconSize: [25, 41],
+          iconAnchor: [12, 41],
+          popupAnchor: [1, -34],
+          shadowUrl:
+            'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+          shadowSize: [41, 41]
+        });
       }
-    }
 
-    refreshPoints();
-    setInterval(refreshPoints, 3000);
+      async function refreshPoints() {
+        try {
+          const res = await fetch('/map/coords', { cache: "no-store" });
+
+          // If Pi isn't alive yet, backend returns 503
+          if (!res.ok) {
+            if (res.status === 503) {
+              setStatus("Pi stream not available yet… waiting for data", "warn");
+              return; // try again next tick
+            }
+            setStatus(`Map data error: HTTP ${res.status}`, "err");
+            return;
+          }
+
+          const data = await res.json();
+          if (!data || !Array.isArray(data.points)) {
+            setStatus("Map data malformed (no points array).", "err");
+            console.error("Bad data:", data);
+            return;
+          }
+
+          setStatus("Map running", "ok");
+
+          const idsSeen = new Set();
+
+          for (const p of data.points) {
+            idsSeen.add(p.id);
+
+            if (!markersById.has(p.id)) {
+              const m = L.marker([p.lat, p.lon], { icon: iconFor(p.severity) })
+                .bindPopup(
+                  `<b>Damage point #${p.id}</b><br/>Severity: ${p.severity}<br/>` +
+                  `(${p.lat.toFixed(5)}, ${p.lon.toFixed(5)})`
+                )
+                .addTo(map);
+
+              markersById.set(p.id, m);
+            } else {
+              const m = markersById.get(p.id);
+              m.setLatLng([p.lat, p.lon]);
+              m.setIcon(iconFor(p.severity));
+            }
+          }
+
+          // Remove markers not returned this cycle (optional)
+          for (const [id, m] of markersById.entries()) {
+            if (!idsSeen.has(id)) {
+              map.removeLayer(m);
+              markersById.delete(id);
+            }
+          }
+        } catch (e) {
+          console.error('refreshPoints failed:', e);
+          setStatus("Map data fetch failed (check console).", "err");
+        }
+      }
+
+      // Kick off refresh loop
+      refreshPoints();
+      setInterval(refreshPoints, 2000);
+    }
   </script>
 </body>
 </html>
