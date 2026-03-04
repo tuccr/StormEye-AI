@@ -46,3 +46,4 @@ async def startup_event():
     pistream_routes.pause_pistream()
 
     asyncio.create_task(pistream_routes.connect_webrtc())
+    asyncio.create_task(pistream_routes.telemetry_loop())

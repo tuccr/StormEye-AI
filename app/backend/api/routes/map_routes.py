@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pathlib import Path
 import random
 import time
-
+from .pistream_routes import telemetry_data
 from .pistream_routes import is_flight_enabled, is_pi_stream_alive
 
 router = APIRouter(prefix="/map", tags=["Map"])
@@ -42,3 +42,8 @@ def coords(source: str | None = None):
             "ts": time.time()
         })
     return JSONResponse({"points": points})
+
+#Endpoint to get latest telemetry data from drone. 
+@router.get("/telemetry")
+def get_telemetry():
+    return JSONResponse(telemetry_data)

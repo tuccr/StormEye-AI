@@ -77,6 +77,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.webrtc_client.connection_state_changed.connect(self._on_webrtc_state_changed)
 
         self._setup_connect_overlay()
+        self._setup_telemetry_overlay()
 
         self.ui.btnLiveFeed.clicked.connect(self.on_live_feed_clicked)
         self.ui.btn3DMap.clicked.connect(self.on_map_view_clicked)
@@ -85,6 +86,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._sync_flight_ui()
         self._set_connection_status("disconnected")
+
+        self.telemetry_timer = QtCore.QTimer()
+        self.telemetry_timer.timeout.connect(self._update_telemetry)
+        self.telemetry_timer.start(500)
 
         QtCore.QTimer.singleShot(0, self._post_qt_startup)
 
@@ -132,6 +137,38 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addStretch(2)
 
         self.ui.videoLabel.installEventFilter(self)
+        
+    def _setup_telemetry_overlay(self):
+        self._telemetryLabel = QtWidgets.QLabel(self.ui.videoLabel)
+        self._telemetryLabel.setStyleSheet("color: #00FF00; font-weight: bold; font-size: 14px; background-color: rgba(0, 0, 0, 100); padding: 4px; border-radius: 4px;")
+        self._telemetryLabel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._telemetryLabel.setVisible(False)
+
+    def _update_telemetry(self):
+        if self.flight_active:
+            asyncio.create_task(self._fetch_telemetry())
+        else:
+            self._telemetryLabel.setVisible(False)
+
+    async def _fetch_telemetry(self):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get("http://127.0.0.1:8000/map/telemetry") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        self._render_telemetry(data)
+        except Exception:
+            pass
+
+    def _render_telemetry(self, data):
+        if not data.get("connected"):
+            self._telemetryLabel.setVisible(False)
+            return
+
+        text = (f"BAT: {data.get('battery', 0)}%  |  ALT: {data.get('alt', 0):.1f}m  |  SPD: {data.get('speed', 0):.1f}m/s  |  HDG: {data.get('heading', 0)}°")
+        self._telemetryLabel.setText(text)
+        self._telemetryLabel.adjustSize()
+        self._telemetryLabel.setVisible(True)
 
     def _show_connect_overlay(self, show: bool, text: str | None = None):
         try:
@@ -146,6 +183,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if obj is self.ui.videoLabel and event.type() == QtCore.QEvent.Type.Resize:
             try:
                 self._connectOverlay.setGeometry(self.ui.videoLabel.rect())
+                self._telemetryLabel.move(10, 10)
             except Exception:
                 pass
         return super().eventFilter(obj, event)

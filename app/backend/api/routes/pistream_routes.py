@@ -4,7 +4,11 @@ import time
 import httpx
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from av import VideoFrame
+from pymavlink import mavutil
 
+
+#Telemetry reciever port, needs to be changed for ground station
+RECIEVER_PORT = 'COM9'
 # Prefer an IP if possible. mDNS (raspberrypi.local) can be flaky on Windows.
 PI_OFFER_URL = os.getenv("PI_OFFER_URL", "http://10.3.141.1:8080/offer")
 
@@ -139,6 +143,56 @@ async def _watchdog(disconnect_event: asyncio.Event, last_frame_ts: dict, stall_
             print(f"⚠️ Frame stall detected (> {stall_s}s). Forcing reconnect...")
             disconnect_event.set()
             break
+
+#Telemetry State
+
+telemetry_data = {
+    "connected": False,
+    "lat": 0.0,
+    "lon": 0.0,
+    "alt": 0.0,
+    "heading": 0,
+    "battery":0,
+    "speed": 0.0
+}
+
+async def telemetry_loop():
+    """
+    Task to read MAVLink data from radio
+    """
+    print(f"Starting mavlink service wiht port:{RECIEVER_PORT}")
+
+    while True:
+        try:
+            #This connects to the drone trasnmitter
+            print(f"Connecting to radio...")
+            conn = await asyncio.to_thread(mavutil.mavlink_connection, RECIEVER_PORT, baud=57600)
+            print("Waiting for heartbeat...")
+            await asyncio.to_thread(conn.wait_heartbeat)
+            print("Mavlink heartbeat recieved! Telmetry is active")
+            telemetry_data["connected"] = True
+
+            #reading loop
+            while True:
+                msg = await asyncio.to_thread(conn.recv_match,blocking=True,timeout=1.0)
+
+                if msg:
+                    msg_type = msg.get_type()
+                    if msg_type == 'GPS_RAW_INT':
+                        telemetry_data["lat"] = msg.lat / 1e7
+                        telemetry_data["lon"] = msg.lon / 1e7
+                        telemetry_data["alt"] = msg.alt / 1000.0
+                elif msg_type == 'VFR_HUD':
+                    telemetry_data["heading"] = msg.heading
+                    telemetry_data["speed"] = msg.groundspeed
+                elif msg_type == 'SYS_STATUS':
+                    telemetry_data["battery"] = msg.battery_remaining
+                await asyncio.sleep(0.01)
+        except Exception as e:
+            print(f"Telemetry error: {e}")
+            telemetry_data["connected"] = False
+            await asyncio.sleep(5)
+            
 
 
 async def connect_webrtc():
