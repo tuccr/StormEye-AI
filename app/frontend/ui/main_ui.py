@@ -45,6 +45,44 @@ class Ui_MainWindow(object):
             btn.setMinimumHeight(30)
             self.sidebarLayout.addWidget(btn)
 
+# ===== Telemetry Sidebar Box (The Pink Section) =====
+        self.telemetryBox = QtWidgets.QGroupBox("Telemetry Data")
+        # Optional: Styling to match your dark theme and green text
+        self.telemetryBox.setStyleSheet("""
+            QGroupBox {
+                border: 1px solid #555555;
+                border-radius: 5px;
+                margin-top: 15px;
+                color: #DDDDDD;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px 0 3px;
+            }
+        """)
+        
+        self.telemetryBoxLayout = QtWidgets.QVBoxLayout(self.telemetryBox)
+        self.telemetryBoxLayout.setSpacing(10)
+
+        # Create the placeholders
+        self.lblAlt = QtWidgets.QLabel("ALT: -- m")
+        self.lblSpeed = QtWidgets.QLabel("SPD: -- m/s")
+        self.lblHeading = QtWidgets.QLabel("HDG: -- °")
+        self.lblLongitude = QtWidgets.QLabel("LON: --")
+        self.lblLatitude = QtWidgets.QLabel("LAT: --")
+
+        # Style the labels to pop (matching your existing overlay color)
+        for lbl in [ self.lblAlt, self.lblSpeed, self.lblHeading, self.lblLongitude,self.lblLatitude]:
+            lbl.setStyleSheet("color: #00FF00; font-weight: bold; font-size: 13px;")
+            self.telemetryBoxLayout.addWidget(lbl)
+
+        # Add the box to the sidebar
+        self.sidebarLayout.addWidget(self.telemetryBox)
+
+        # Spacer before control buttons (pushes the control buttons to the very bottom)
+        self.sidebarLayout.addStretch(1)
         # Spacer before control buttons
         self.sidebarLayout.addStretch(1)
 
@@ -92,9 +130,7 @@ class Ui_MainWindow(object):
         self.telemetryLayout = QtWidgets.QHBoxLayout()
         self.telemetryLayout.addWidget(QtWidgets.QLabel("Telemetry"))
 
-        self.chkBattery = QtWidgets.QCheckBox("Battery")
         self.chkGPS = QtWidgets.QCheckBox("GPS Signal")
-        self.telemetryLayout.addWidget(self.chkBattery)
         self.telemetryLayout.addWidget(self.chkGPS)
         self.telemetryLayout.addStretch(1)
 

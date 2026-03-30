@@ -162,10 +162,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _render_telemetry(self, data):
         if not data.get("connected"):
+            # Hide overlay
             self._telemetryLabel.setVisible(False)
+            # Reset sidebar labels to placeholder state
+            self.ui.lblAlt.setText("ALT: -- m")
+            self.ui.lblSpeed.setText("SPD: -- m/s")
+            self.ui.lblHeading.setText("HDG: -- °")
+            self.ui.lblHeading.setText("LAT: --")
+            self.ui.lblHeading.setText("LON: --")
             return
 
-        text = (f"BAT: {data.get('battery', 0)}%  |  ALT: {data.get('alt', 0):.1f}m  |  SPD: {data.get('speed', 0):.1f}m/s  |  HDG: {data.get('heading', 0)}°")
+        # 1. Update Existing Video Overlay
+        text = (f"BAT: {data.get('battery', 0)}%  |  ALT: {data.get('alt', 0):.1f}m  |  SPD: {data.get('speed', 0):.1f}m/s  |  HDG: {data.get('heading', 0)}° | LAT: {data.get('lat', 0.0):.6f}  | LON: {data.get('lon', 0.0):.6f}")
+        self._telemetryLabel.setText(text)
+        self._telemetryLabel.adjustSize()
+        self._telemetryLabel.setVisible(True)
+
+        # 2. Update New Sidebar Box
+        self.ui.lblAlt.setText(f"ALT: {data.get('alt', 0):.1f} m")
+        self.ui.lblSpeed.setText(f"SPD: {data.get('speed', 0):.1f} m/s")
+        self.ui.lblHeading.setText(f"HDG: {data.get('heading', 0)}°")
+        text = (f"ALT: {data.get('alt', 0):.1f}m  |  SPD: {data.get('speed', 0):.1f}m/s  |  HDG: {data.get('heading', 0)}°")
         self._telemetryLabel.setText(text)
         self._telemetryLabel.adjustSize()
         self._telemetryLabel.setVisible(True)
