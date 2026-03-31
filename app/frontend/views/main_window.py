@@ -175,7 +175,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.lblAlt.setText(f"ALT: {data.get('alt', 0):.1f} m")
         self.ui.lblSpeed.setText(f"SPD: {data.get('speed', 0):.1f} m/s")
         self.ui.lblHeading.setText(f"HDG: {data.get('heading', 0)}°")
-        text = (f"ALT: {data.get('alt', 0):.1f}m  |  SPD: {data.get('speed', 0):.1f}m/s  |  HDG: {data.get('heading', 0)}°")
+        #text = (f"ALT: {data.get('alt', 0):.1f}m  |  SPD: {data.get('speed', 0):.1f}m/s  |  HDG: {data.get('heading', 0)}°")
         self._telemetryLabel.setText(text)
         self._telemetryLabel.adjustSize()
         self._telemetryLabel.setVisible(True)
