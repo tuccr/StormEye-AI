@@ -7,8 +7,9 @@ from av import VideoFrame
 from pymavlink import mavutil
 
 
-#Telemetry reciever port, needs to be changed for ground station
-RECIEVER_PORT = 'COM9'
+# Telemetry receiver port, needs to be changed for ground station
+RECIEVER_PORT = "COM3"
+
 # Prefer an IP if possible. mDNS (raspberrypi.local) can be flaky on Windows.
 PI_OFFER_URL = os.getenv("PI_OFFER_URL", "http://10.3.141.1:8080/offer")
 
@@ -45,14 +46,9 @@ def flight_enabled_event() -> asyncio.Event:
 # Pi connection / media health
 # ----------------------------
 
-# When we last received an actual frame from the Pi ingest PC
 _LAST_PI_FRAME_TS: float = 0.0
-
-# Whether the ingest PC is currently in a "connected/streaming" phase
 _PI_STREAM_OK: bool = False
-
-# How fresh a frame must be to consider Pi "alive"
-_PI_ALIVE_WINDOW_S: float = 2.5  # adjust if needed
+_PI_ALIVE_WINDOW_S: float = 2.5
 
 
 def mark_pi_frame_received() -> None:
@@ -73,27 +69,32 @@ def is_pi_stream_alive(window_s: float | None = None) -> bool:
     """
     if window_s is None:
         window_s = _PI_ALIVE_WINDOW_S
+
     if not _PI_STREAM_OK:
         return False
     if _LAST_PI_FRAME_TS <= 0:
         return False
+
     return (time.monotonic() - _LAST_PI_FRAME_TS) <= float(window_s)
 
 
+# ----------------------------
 # Pause control for the Pi ingest loop
+# ----------------------------
+
 _pause_event = asyncio.Event()
 _pause_event.set()  # not paused initially
 
 
 def pause_pistream():
     _pause_event.clear()
-    # clear queued frames
+
     try:
         while frame_queue.full():
             frame_queue.get_nowait()
     except Exception:
         pass
-    # Mark pi as not alive when paused
+
     set_pi_stream_ok(False)
 
 
@@ -112,12 +113,10 @@ async def push_frames_to_queue(track, disconnect_event: asyncio.Event, last_fram
             frame: VideoFrame = await track.recv()
             img = frame.to_ndarray(format="bgr24")
 
-            # Update timestamps
             t = time.monotonic()
             last_frame_ts["t"] = t
             mark_pi_frame_received()
 
-            # Keep only the latest frame
             if frame_queue.full():
                 try:
                     frame_queue.get_nowait()
@@ -144,7 +143,10 @@ async def _watchdog(disconnect_event: asyncio.Event, last_frame_ts: dict, stall_
             disconnect_event.set()
             break
 
-#Telemetry State
+
+# ----------------------------
+# Telemetry state
+# ----------------------------
 
 telemetry_data = {
     "connected": False,
@@ -152,47 +154,79 @@ telemetry_data = {
     "lon": 0.0,
     "alt": 0.0,
     "heading": 0,
-    "battery":0,
-    "speed": 0.0
+    "battery": 0,
+    "speed": 0.0,
 }
+
 
 async def telemetry_loop():
     """
-    Task to read MAVLink data from radio
+    Task to read MAVLink data from radio.
     """
-    print(f"Starting mavlink service wiht port:{RECIEVER_PORT}")
+    print(f"Starting mavlink service with port: {RECIEVER_PORT}")
 
     while True:
+        conn = None
         try:
-            #This connects to the drone trasnmitter
-            print(f"Connecting to radio...")
-            conn = await asyncio.to_thread(mavutil.mavlink_connection, RECIEVER_PORT, baud=57600)
+            print("Connecting to radio...")
+            conn = await asyncio.to_thread(
+                mavutil.mavlink_connection,
+                RECIEVER_PORT,
+                baud=57600,
+            )
+
             print("Waiting for heartbeat...")
             await asyncio.to_thread(conn.wait_heartbeat)
-            print("Mavlink heartbeat recieved! Telmetry is active")
+            print("Mavlink heartbeat received! Telemetry is active.")
+
             telemetry_data["connected"] = True
 
-            #reading loop
             while True:
-                msg = await asyncio.to_thread(conn.recv_match,blocking=True,timeout=1.0)
+                msg = await asyncio.to_thread(conn.recv_match, blocking=True, timeout=1.0)
 
-                if msg:
-                    msg_type = msg.get_type()
-                    if msg_type == 'GPS_RAW_INT':
-                        telemetry_data["lat"] = msg.lat / 1e7
-                        telemetry_data["lon"] = msg.lon / 1e7
-                        telemetry_data["alt"] = msg.alt / 1000.0
-                elif msg_type == 'VFR_HUD':
-                    telemetry_data["heading"] = msg.heading
-                    telemetry_data["speed"] = msg.groundspeed
-                elif msg_type == 'SYS_STATUS':
-                    telemetry_data["battery"] = msg.battery_remaining
+                # No message this cycle -> keep looping without crashing
+                if msg is None:
+                    await asyncio.sleep(0.01)
+                    continue
+
+                msg_type = msg.get_type()
+
+                if msg_type == "GPS_RAW_INT":
+                    telemetry_data["lat"] = msg.lat / 1e7
+                    telemetry_data["lon"] = msg.lon / 1e7
+                    telemetry_data["alt"] = msg.alt / 1000.0
+
+                elif msg_type == "GLOBAL_POSITION_INT":
+                    # Fallback/extra source for relative altitude if needed
+                    telemetry_data["lat"] = msg.lat / 1e7
+                    telemetry_data["lon"] = msg.lon / 1e7
+                    telemetry_data["alt"] = msg.relative_alt / 1000.0
+
+                elif msg_type == "VFR_HUD":
+                    telemetry_data["heading"] = int(msg.heading)
+                    telemetry_data["speed"] = float(msg.groundspeed)
+
+                elif msg_type == "SYS_STATUS":
+                    telemetry_data["battery"] = int(msg.battery_remaining)
+
                 await asyncio.sleep(0.01)
+
         except Exception as e:
             print(f"Telemetry error: {e}")
             telemetry_data["connected"] = False
+
+            # Optional: keep last known coordinates, but clear non-positional values if you want
+            # telemetry_data["heading"] = 0
+            # telemetry_data["speed"] = 0.0
+            # telemetry_data["battery"] = 0
+
+            try:
+                if conn is not None:
+                    await asyncio.to_thread(conn.close)
+            except Exception:
+                pass
+
             await asyncio.sleep(5)
-            
 
 
 async def connect_webrtc():
@@ -208,7 +242,6 @@ async def connect_webrtc():
     Also tracks Pi stream health so the frontend can be blocked when Pi is down.
     """
     while True:
-        # Wait until flight enabled AND not paused
         await _FLIGHT_EVENT.wait()
         await _pause_event.wait()
 
@@ -216,11 +249,8 @@ async def connect_webrtc():
         disconnect_event = asyncio.Event()
         frame_task = None
         watchdog_task = None
-
-        # Track last received frame time
         last_frame_ts = {"t": time.monotonic()}
 
-        # assume not OK until proven otherwise
         set_pi_stream_ok(False)
 
         try:
@@ -234,7 +264,9 @@ async def connect_webrtc():
                     nonlocal frame_task
                     if frame_task and not frame_task.done():
                         frame_task.cancel()
-                    frame_task = asyncio.create_task(push_frames_to_queue(track, disconnect_event, last_frame_ts))
+                    frame_task = asyncio.create_task(
+                        push_frames_to_queue(track, disconnect_event, last_frame_ts)
+                    )
 
             @pc.on("connectionstatechange")
             async def on_conn_state():
@@ -248,11 +280,9 @@ async def connect_webrtc():
                 if pc.iceConnectionState in ("failed", "disconnected", "closed"):
                     disconnect_event.set()
 
-            # 1) Create local offer
             offer = await pc.createOffer()
             await pc.setLocalDescription(offer)
 
-            # 2) Send offer to Pi
             print("📨 Sending OFFER to Pi...")
             async with httpx.AsyncClient(timeout=20) as client:
                 resp = await client.post(
@@ -265,24 +295,21 @@ async def connect_webrtc():
                 await asyncio.sleep(2)
                 continue
 
-            # 3) Set remote description (answer)
             answer_json = resp.json()
 
-            # If Pi returns malformed JSON (your "'sdp'" issue), fail fast
             if "sdp" not in answer_json or "type" not in answer_json:
                 raise KeyError("sdp/type missing from Pi answer")
 
             answer = RTCSessionDescription(answer_json["sdp"], answer_json["type"])
             await pc.setRemoteDescription(answer)
 
-            # At this point, the signaling succeeded; we still require frames
             set_pi_stream_ok(True)
             print("✅ Pi WebRTC signaling complete — waiting for frames...")
 
-            # Start watchdog once connected
-            watchdog_task = asyncio.create_task(_watchdog(disconnect_event, last_frame_ts, stall_s=3.0))
+            watchdog_task = asyncio.create_task(
+                _watchdog(disconnect_event, last_frame_ts, stall_s=3.0)
+            )
 
-            # Keep running until disconnect OR flight ends OR paused
             while not disconnect_event.is_set():
                 if (not _FLIGHT_EVENT.is_set()) or (not _pause_event.is_set()):
                     disconnect_event.set()
@@ -308,5 +335,4 @@ async def connect_webrtc():
                 except Exception:
                     pass
 
-            # Small backoff before retry
             await asyncio.sleep(2)

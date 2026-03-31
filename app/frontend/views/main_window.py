@@ -19,7 +19,6 @@ class DebugWebPage(QWebEnginePage):
         return None
 
     def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
-        # This will show you exactly why the map is white (CDN blocked, SSL, etc.)
         try:
             print(f"[MAP JS] {sourceID}:{lineNumber} - {message}")
         except Exception:
@@ -68,6 +67,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.btnAIToggle.setChecked(False)
         self.ui.btnAIToggle.setEnabled(False)
 
+        # GPS checkbox should be indicator-only
+        self.ui.chkGPS.setEnabled(False)
+
         self.webrtc_client = WebRTCClient(
             self.ui.videoLabel,
             ai_enabled=self.ai_enabled,
@@ -78,6 +80,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._setup_connect_overlay()
         self._setup_telemetry_overlay()
+        self._reset_sidebar_telemetry()
 
         self.ui.btnLiveFeed.clicked.connect(self.on_live_feed_clicked)
         self.ui.btn3DMap.clicked.connect(self.on_map_view_clicked)
@@ -137,18 +140,45 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addStretch(2)
 
         self.ui.videoLabel.installEventFilter(self)
-        
+
     def _setup_telemetry_overlay(self):
         self._telemetryLabel = QtWidgets.QLabel(self.ui.videoLabel)
-        self._telemetryLabel.setStyleSheet("color: #00FF00; font-weight: bold; font-size: 14px; background-color: rgba(0, 0, 0, 100); padding: 4px; border-radius: 4px;")
+        self._telemetryLabel.setStyleSheet(
+            "color: #00FF00; font-weight: bold; font-size: 14px; "
+            "background-color: rgba(0, 0, 0, 100); padding: 4px; border-radius: 4px;"
+        )
         self._telemetryLabel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._telemetryLabel.setVisible(False)
+
+    def _reset_sidebar_telemetry(self):
+        self.ui.lblAlt.setText("ALT: -- m")
+        self.ui.lblSpeed.setText("SPD: -- m/s")
+        self.ui.lblHeading.setText("HDG: -- °")
+        self.ui.lblLongitude.setText("LON: --")
+        self.ui.lblLatitude.setText("LAT: --")
+        self.ui.chkGPS.setChecked(False)
+
+    def _valid_gps_fix(self, data: dict) -> bool:
+        try:
+            lat = float(data.get("lat", 0.0) or 0.0)
+            lon = float(data.get("lon", 0.0) or 0.0)
+        except Exception:
+            return False
+
+        return (
+            bool(data.get("connected"))
+            and lat != 0.0
+            and lon != 0.0
+            and -90.0 <= lat <= 90.0
+            and -180.0 <= lon <= 180.0
+        )
 
     def _update_telemetry(self):
         if self.flight_active:
             asyncio.create_task(self._fetch_telemetry())
         else:
             self._telemetryLabel.setVisible(False)
+            self._reset_sidebar_telemetry()
 
     async def _fetch_telemetry(self):
         try:
@@ -157,26 +187,50 @@ class MainWindow(QtWidgets.QMainWindow):
                     if resp.status == 200:
                         data = await resp.json()
                         self._render_telemetry(data)
+                    else:
+                        self._telemetryLabel.setVisible(False)
+                        self._reset_sidebar_telemetry()
         except Exception:
-            pass
+            self._telemetryLabel.setVisible(False)
+            self._reset_sidebar_telemetry()
 
     def _render_telemetry(self, data):
-        if not data.get("connected"):
-            # Hide overlay
+        connected = bool(data.get("connected", False))
+        has_fix = self._valid_gps_fix(data)
+
+        if not connected:
             self._telemetryLabel.setVisible(False)
-            # Reset sidebar labels to placeholder state
-            self.ui.lblAlt.setText("ALT: -- m")
-            self.ui.lblSpeed.setText("SPD: -- m/s")
-            self.ui.lblHeading.setText("HDG: -- °")
-            self.ui.lblHeading.setText("LAT: --")
-            self.ui.lblHeading.setText("LON: --")
+            self._reset_sidebar_telemetry()
             return
-        #Side bar loading Telemetry data
-        self.ui.lblAlt.setText(f"ALT: {data.get('alt', 0):.1f} m")
-        self.ui.lblSpeed.setText(f"SPD: {data.get('speed', 0):.1f} m/s")
-        self.ui.lblHeading.setText(f"HDG: {data.get('heading', 0)}°")
-        text = (f"ALT: {data.get('alt', 0):.1f}m  |  SPD: {data.get('speed', 0):.1f}m/s  |  HDG: {data.get('heading', 0)}°")
-        self._telemetryLabel.setText(text)
+
+        alt = float(data.get("alt", 0.0) or 0.0)
+        speed = float(data.get("speed", 0.0) or 0.0)
+        heading = int(data.get("heading", 0) or 0)
+        lat = float(data.get("lat", 0.0) or 0.0)
+        lon = float(data.get("lon", 0.0) or 0.0)
+
+        # Sidebar telemetry
+        self.ui.lblAlt.setText(f"ALT: {alt:.1f} m")
+        self.ui.lblSpeed.setText(f"SPD: {speed:.1f} m/s")
+        self.ui.lblHeading.setText(f"HDG: {heading}°")
+
+        if has_fix:
+            self.ui.lblLatitude.setText(f"LAT: {lat:.6f}")
+            self.ui.lblLongitude.setText(f"LON: {lon:.6f}")
+            self.ui.chkGPS.setChecked(True)
+        else:
+            self.ui.lblLatitude.setText("LAT: --")
+            self.ui.lblLongitude.setText("LON: --")
+            self.ui.chkGPS.setChecked(False)
+
+        # Video overlay telemetry
+        overlay_text = (
+            f"ALT: {alt:.1f}m  |  SPD: {speed:.1f}m/s  |  HDG: {heading}°"
+        )
+        if has_fix:
+            overlay_text += f"  |  LAT: {lat:.6f}  |  LON: {lon:.6f}"
+
+        self._telemetryLabel.setText(overlay_text)
         self._telemetryLabel.adjustSize()
         self._telemetryLabel.setVisible(True)
 
@@ -208,7 +262,6 @@ class MainWindow(QtWidgets.QMainWindow):
             print("[MAP] loadFinished(ok=False) – map load failed (possibly 503/blocked resources).")
 
     def _reload_map(self):
-        # ✅ cache-bust every reload to avoid “stuck white page”
         url = QUrl(f"{self._map_url_base}?ts={int(time.time() * 1000)}")
         self.webView.load(url)
         self._map_loaded = False
@@ -223,7 +276,6 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self._show_connect_overlay(False)
 
-        # When we become connected, refresh map (if we ever showed a failure/blank page)
         if state == "connected":
             if self._map_failed or (not self._map_loaded):
                 self._reload_map()
@@ -268,6 +320,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.videoLabel.setText("Offline")
         self.ui.videoLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.ui.videoLabel.setStyleSheet("background-color: black; color: white; font-size: 32px;")
+        self._telemetryLabel.setVisible(False)
+        self._reset_sidebar_telemetry()
 
     def _show_video_view(self):
         self._showing_map = False
@@ -328,6 +382,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.videoLabel.setText("Connection failed")
         self.ui.videoLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.ui.videoLabel.setStyleSheet("background-color: black; color: white; font-size: 28px;")
+        self._telemetryLabel.setVisible(False)
+        self._reset_sidebar_telemetry()
 
     def on_flight_toggle_clicked(self):
         asyncio.create_task(self._toggle_flight())
@@ -362,7 +418,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stream_connected = False
         self._sync_flight_ui()
 
-        # Always attempt to load map UI (even if Pi isn’t ready, coords will 503 until alive)
         self._reload_map()
 
         self._set_connection_status("connecting")
@@ -422,7 +477,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if (not self.flight_active) or (not self.stream_connected):
             return
 
-        # If it was blank/failed earlier, reload before showing
         if self._map_failed or (not self._map_loaded):
             self._reload_map()
 
