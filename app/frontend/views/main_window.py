@@ -68,7 +68,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.btnAIToggle.setEnabled(False)
 
 
-
         self.webrtc_client = WebRTCClient(
             self.ui.videoLabel,
             ai_enabled=self.ai_enabled,
