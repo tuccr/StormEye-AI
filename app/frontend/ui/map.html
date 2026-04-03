@@ -89,13 +89,25 @@
       border-color: rgba(46, 204, 113, 1);
     }
 
-    .drone-marker {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: #1e90ff;
-      border: 3px solid white;
-      box-shadow: 0 0 10px rgba(30,144,255,0.9);
+    .drone-arrow-icon {
+      background: transparent;
+      border: none;
+    }
+
+    .drone-arrow-wrap {
+      width: 34px;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transform-origin: 50% 50%;
+    }
+
+    .drone-arrow-svg {
+      width: 30px;
+      height: 30px;
+      overflow: visible;
+      filter: drop-shadow(0 0 4px rgba(30,144,255,0.95));
     }
   </style>
 </head>
@@ -199,19 +211,43 @@
       const div = L.DomUtil.create("div", "legend");
       div.innerHTML = `
         <div><b>StormEye GPS Map</b></div>
-        <div>Blue marker = drone</div>
+        <div>Blue arrow = drone heading</div>
         <div>Line = recent GPS trail</div>
       `;
       return div;
     };
     legend.addTo(map);
 
-    const droneIcon = L.divIcon({
-      className: "",
-      html: '<div class="drone-marker"></div>',
-      iconSize: [24, 24],
-      iconAnchor: [12, 12]
-    });
+        function makeDroneArrowIcon(headingDeg = 0) {
+      const safeHeading = Number.isFinite(Number(headingDeg)) ? Number(headingDeg) : 0;
+
+      return L.divIcon({
+        className: "drone-arrow-icon",
+        iconSize: [34, 34],
+        iconAnchor: [17, 17],
+        popupAnchor: [0, -16],
+        html: `
+          <div class="drone-arrow-wrap" style="transform: rotate(${safeHeading}deg);">
+            <svg class="drone-arrow-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path
+                d="M50 8 L84 84 L50 68 L16 84 Z"
+                fill="#1e90ff"
+                stroke="#ffffff"
+                stroke-width="8"
+                stroke-linejoin="round"
+              />
+              <circle
+                cx="50"
+                cy="56"
+                r="7"
+                fill="#ffffff"
+                opacity="0.95"
+              />
+            </svg>
+          </div>
+        `
+      });
+    }
 
     let droneMarker = null;
     let trailLine = L.polyline([], { weight: 4, opacity: 0.85 }).addTo(map);
@@ -345,13 +381,18 @@
         }
 
         const latlng = [drone.lat, drone.lon];
+        const heading = Number(drone.heading || 0);
 
         if (!droneMarker) {
-          droneMarker = L.marker(latlng, { icon: droneIcon })
+          droneMarker = L.marker(latlng, {
+            icon: makeDroneArrowIcon(heading),
+            zIndexOffset: 1000
+          })
             .bindPopup("StormEye Drone")
             .addTo(map);
         } else {
           droneMarker.setLatLng(latlng);
+          droneMarker.setIcon(makeDroneArrowIcon(heading));
         }
 
         trailLine.setLatLngs(trail.map(p => [p.lat, p.lon]));

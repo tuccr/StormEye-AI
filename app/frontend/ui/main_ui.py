@@ -126,16 +126,6 @@ class Ui_MainWindow(object):
         # Add top layout to main
         self.mainLayout.addLayout(self.topLayout)
 
-        # ---- Telemetry Section (bottom) ----
-        self.telemetryLayout = QtWidgets.QHBoxLayout()
-        self.telemetryLayout.addWidget(QtWidgets.QLabel("Telemetry"))
-
-        self.chkGPS = QtWidgets.QCheckBox("GPS Signal")
-        self.telemetryLayout.addWidget(self.chkGPS)
-        self.telemetryLayout.addStretch(1)
-
-        self.mainLayout.addLayout(self.telemetryLayout)
-
         # Retranslate UI
         self.retranslateUi(MainWindow)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)

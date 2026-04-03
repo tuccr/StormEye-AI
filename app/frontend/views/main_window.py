@@ -67,8 +67,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.btnAIToggle.setChecked(False)
         self.ui.btnAIToggle.setEnabled(False)
 
-        # GPS checkbox should be indicator-only
-        self.ui.chkGPS.setEnabled(False)
+
 
         self.webrtc_client = WebRTCClient(
             self.ui.videoLabel,
@@ -156,7 +155,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.lblHeading.setText("HDG: -- °")
         self.ui.lblLongitude.setText("LON: --")
         self.ui.lblLatitude.setText("LAT: --")
-        self.ui.chkGPS.setChecked(False)
 
     def _valid_gps_fix(self, data: dict) -> bool:
         try:
@@ -217,22 +215,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if has_fix:
             self.ui.lblLatitude.setText(f"LAT: {lat:.6f}")
             self.ui.lblLongitude.setText(f"LON: {lon:.6f}")
-            self.ui.chkGPS.setChecked(True)
         else:
             self.ui.lblLatitude.setText("LAT: --")
             self.ui.lblLongitude.setText("LON: --")
-            self.ui.chkGPS.setChecked(False)
-
-        # Video overlay telemetry
-        overlay_text = (
-            f"ALT: {alt:.1f}m  |  SPD: {speed:.1f}m/s  |  HDG: {heading}°"
-        )
-        if has_fix:
-            overlay_text += f"  |  LAT: {lat:.6f}  |  LON: {lon:.6f}"
-
-        self._telemetryLabel.setText(overlay_text)
-        self._telemetryLabel.adjustSize()
-        self._telemetryLabel.setVisible(True)
 
     def _show_connect_overlay(self, show: bool, text: str | None = None):
         try:
