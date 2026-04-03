@@ -223,16 +223,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui.lblLongitude.setText("LON: --")
             self.ui.chkGPS.setChecked(False)
 
-        # Video overlay telemetry
-        overlay_text = (
-            f"ALT: {alt:.1f}m  |  SPD: {speed:.1f}m/s  |  HDG: {heading}°"
-        )
-        if has_fix:
-            overlay_text += f"  |  LAT: {lat:.6f}  |  LON: {lon:.6f}"
-
-        self._telemetryLabel.setText(overlay_text)
-        self._telemetryLabel.adjustSize()
-        self._telemetryLabel.setVisible(True)
 
     def _show_connect_overlay(self, show: bool, text: str | None = None):
         try:
