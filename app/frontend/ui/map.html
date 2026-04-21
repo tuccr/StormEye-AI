@@ -4,110 +4,442 @@
   <meta charset="UTF-8" />
   <title>StormEye – Map</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-    crossorigin=""
-  />
+
+  <link rel="stylesheet" href="/map/assets/leaflet/leaflet.css" />
+
   <style>
     html, body, #map { height: 100%; margin: 0; }
-    .legend {
-      background: white; padding: 8px 10px; border: 1px solid #ccc; border-radius: 4px;
-      box-shadow: 0 1px 4px rgba(0,0,0,.2); line-height: 1.2;
+    body { background: #111; font-family: Arial, sans-serif; }
+
+    #map {
+      background:
+        linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px),
+        #111;
+      background-size: 40px 40px, 40px 40px, auto;
     }
-    .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
-    .minor { background:#2ecc71; }
-    .moderate { background:#f1c40f; }
-    .major { background:#e74c3c; }
+
+    .legend {
+      background: white;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.2);
+      line-height: 1.2;
+    }
+
+    #status {
+      position: absolute;
+      z-index: 9999;
+      top: 50px;
+      left: 10px;
+      background: rgba(0,0,0,0.80);
+      color: white;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 14px;
+      max-width: 460px;
+      line-height: 1.35;
+    }
+
+    #status.ok { background: rgba(46, 204, 113, 0.90); }
+    #status.warn { background: rgba(241, 196, 15, 0.90); color: #111; }
+    #status.err { background: rgba(231, 76, 60, 0.90); }
+
+    #telemetry {
+      position: absolute;
+      z-index: 9999;
+      top: 102px;
+      left: 10px;
+      background: rgba(0,0,0,0.72);
+      color: #00ff9c;
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      min-width: 230px;
+      line-height: 1.5;
+      white-space: pre-line;
+      display: none;
+    }
+
+    #controls {
+      position: absolute;
+      z-index: 9999;
+      top: 60px;
+      right: 10px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .map-btn {
+      background: rgba(255,255,255,0.95);
+      color: #111;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 13px;
+      cursor: pointer;
+      box-shadow: 0 1px 4px rgba(0,0,0,.2);
+    }
+
+    .map-btn.active {
+      background: rgba(46, 204, 113, 0.95);
+      color: white;
+      border-color: rgba(46, 204, 113, 1);
+    }
+
+    .drone-arrow-icon {
+      background: transparent;
+      border: none;
+    }
+
+    .drone-arrow-wrap {
+      width: 34px;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transform-origin: 50% 50%;
+    }
+
+    .drone-arrow-svg {
+      width: 30px;
+      height: 30px;
+      overflow: visible;
+      filter: drop-shadow(0 0 4px rgba(30,144,255,0.95));
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div id="status" class="warn">Loading map…</div>
+  <div id="telemetry"></div>
 
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-    crossorigin=""
-  ></script>
+  <div id="controls">
+    <button id="followBtn" class="map-btn active" type="button">Follow Drone: ON</button>
+    <button id="centerUcfBtn" class="map-btn" type="button">Center UCF</button>
+  </div>
+
+  <script src="/map/assets/leaflet/leaflet.js"></script>
   <script>
-    // Initial view (UCF area)
-    const map = L.map('map', { zoomControl: true }).setView([28.6024, -81.2001], 13);
+    const UCF_CENTER = [28.6024, -81.2001];
+    const UCF_DEFAULT_ZOOM = 16;
+    const FIRST_FIX_ZOOM = 18;
 
-    // OSM tiles
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+    const statusEl = document.getElementById("status");
+    const telemetryEl = document.getElementById("telemetry");
+    const followBtn = document.getElementById("followBtn");
+    const centerUcfBtn = document.getElementById("centerUcfBtn");
 
-    // Simple legend
-    const legend = L.control({ position: 'topright' });
+    let followDrone = true;
+    let mbtilesBounds = null;
+    let mbtilesMaxZoom = null;
+    let appliedOfflineFit = false;
+
+    function setStatus(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = cls || "warn";
+    }
+
+    function setFollowButtonState() {
+      followBtn.textContent = `Follow Drone: ${followDrone ? "ON" : "OFF"}`;
+      followBtn.classList.toggle("active", followDrone);
+    }
+
+    function setTelemetry(drone, hasFix, connected) {
+      if (!connected || !hasFix || !drone) {
+        telemetryEl.style.display = "none";
+        telemetryEl.textContent = "";
+        return;
+      }
+
+      telemetryEl.textContent =
+        `LAT: ${Number(drone.lat).toFixed(6)}\n` +
+        `LON: ${Number(drone.lon).toFixed(6)}\n` +
+        `ALT: ${Number(drone.alt).toFixed(1)} m\n` +
+        `HDG: ${Number(drone.heading).toFixed(0)}°\n` +
+        `SPD: ${Number(drone.speed).toFixed(1)} m/s\n` +
+        `BAT: ${Number(drone.battery).toFixed(0)}%`;
+
+      telemetryEl.style.display = "block";
+    }
+
+    async function loadOfflineInfo() {
+      try {
+        const res = await fetch("/map/offline-status", { cache: "no-store" });
+        if (!res.ok) return;
+
+        const data = await res.json();
+        if (Array.isArray(data.mbtiles_bounds) && data.mbtiles_bounds.length === 2) {
+          mbtilesBounds = data.mbtiles_bounds;
+        }
+        if (typeof data.mbtiles_maxzoom === "number") {
+          mbtilesMaxZoom = data.mbtiles_maxzoom;
+        }
+      } catch (e) {
+        console.warn("Could not load offline-status:", e);
+      }
+    }
+
+    function fitToOfflineBoundsIfAvailable() {
+      if (!mbtilesBounds || appliedOfflineFit) return;
+      try {
+        map.fitBounds(mbtilesBounds, {
+          padding: [30, 30],
+          maxZoom: mbtilesMaxZoom ?? 18,
+          animate: false
+        });
+        appliedOfflineFit = true;
+      } catch (e) {
+        console.warn("fitBounds failed:", e);
+      }
+    }
+
+    if (typeof window.L === "undefined") {
+      setStatus("Local Leaflet failed to load.", "err");
+      throw new Error("Leaflet not loaded from local assets.");
+    }
+
+    const map = L.map("map", {
+      zoomControl: true,
+      preferCanvas: true
+    }).setView(UCF_CENTER, UCF_DEFAULT_ZOOM);
+
+    const legend = L.control({ position: "topright" });
     legend.onAdd = function () {
-      const div = L.DomUtil.create('div', 'legend');
+      const div = L.DomUtil.create("div", "legend");
       div.innerHTML = `
-        <div><span class="dot minor"></span>Minor</div>
-        <div><span class="dot moderate"></span>Moderate</div>
-        <div><span class="dot major"></span>Major</div>
+        <div><b>StormEye GPS Map</b></div>
+        <div>Blue arrow = drone heading</div>
+        <div>Line = recent GPS trail</div>
       `;
       return div;
     };
     legend.addTo(map);
 
-    // Marker bookkeeping
-    const markersById = new Map();
+        function makeDroneArrowIcon(headingDeg = 0) {
+      const safeHeading = Number.isFinite(Number(headingDeg)) ? Number(headingDeg) : 0;
 
-    function iconFor(sev) {
-      const color = sev === 'major' ? 'red' : (sev === 'moderate' ? 'orange' : 'green');
-      return L.icon({
-        iconUrl:
-          `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${color}.png`,
-        iconSize: [25, 41],
-        iconAnchor: [12, 41],
-        popupAnchor: [1, -34],
-        shadowUrl:
-          'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-        shadowSize: [41, 41]
+      return L.divIcon({
+        className: "drone-arrow-icon",
+        iconSize: [34, 34],
+        iconAnchor: [17, 17],
+        popupAnchor: [0, -16],
+        html: `
+          <div class="drone-arrow-wrap" style="transform: rotate(${safeHeading}deg);">
+            <svg class="drone-arrow-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path
+                d="M50 8 L84 84 L50 68 L16 84 Z"
+                fill="#1e90ff"
+                stroke="#ffffff"
+                stroke-width="8"
+                stroke-linejoin="round"
+              />
+              <circle
+                cx="50"
+                cy="56"
+                r="7"
+                fill="#ffffff"
+                opacity="0.95"
+              />
+            </svg>
+          </div>
+        `
       });
     }
 
-    async function refreshPoints() {
-      try {
-        const res = await fetch('/map/coords'); // later: pass ?source=drone
-        const data = await res.json();
+    let droneMarker = null;
+    let trailLine = L.polyline([], { weight: 4, opacity: 0.85 }).addTo(map);
+    let hasCenteredOnFirstFix = false;
+    let currentTileMode = "none";
+    let activeTileLayer = null;
+    let onlineTileSucceeded = false;
 
-        const idsSeen = new Set();
+    function setTileLayer(layer, modeLabel) {
+      if (activeTileLayer) {
+        try { map.removeLayer(activeTileLayer); } catch (e) {}
+      }
+      activeTileLayer = layer;
+      if (layer) layer.addTo(map);
+      currentTileMode = modeLabel;
+    }
 
-        for (const p of data.points) {
-          idsSeen.add(p.id);
-          if (!markersById.has(p.id)) {
-            const m = L.marker([p.lat, p.lon], { icon: iconFor(p.severity) })
-              .bindPopup(
-                `<b>Damage point #${p.id}</b><br/>Severity: ${p.severity}<br/>` +
-                `(${p.lat.toFixed(5)}, ${p.lon.toFixed(5)})`
-              )
-              .addTo(map);
-            markersById.set(p.id, m);
-          } else {
-            const m = markersById.get(p.id);
-            m.setLatLng([p.lat, p.lon]);
-            m.setIcon(iconFor(p.severity));
+    function switchToMbtiles() {
+      const mbtilesLayer = L.tileLayer("/map/mbtiles/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "Offline MBTiles"
+      });
+
+      let mbtilesWorked = false;
+
+      mbtilesLayer.on("tileload", function () {
+        if (!mbtilesWorked) {
+          mbtilesWorked = true;
+          setStatus("Offline MBTiles active", "ok");
+          fitToOfflineBoundsIfAvailable();
+        }
+      });
+
+      mbtilesLayer.on("tileerror", function () {
+        if (!mbtilesWorked) {
+          setStatus(
+            "No online tiles and MBTiles not found for this area. Using blank tracking view.",
+            "warn"
+          );
+          if (activeTileLayer === mbtilesLayer) {
+            try { map.removeLayer(mbtilesLayer); } catch (e) {}
+            activeTileLayer = null;
+            currentTileMode = "none";
           }
         }
+      });
 
-        // Remove markers not returned this cycle (optional)
-        for (const [id, m] of markersById.entries()) {
-          if (!idsSeen.has(id)) {
-            map.removeLayer(m);
-            markersById.delete(id);
+      setTileLayer(mbtilesLayer, "mbtiles");
+    }
+
+    function startTiles() {
+      const onlineLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors"
+      });
+
+      onlineLayer.on("tileload", function () {
+        if (!onlineTileSucceeded) {
+          onlineTileSucceeded = true;
+          setStatus("Online map tiles active", "ok");
+        }
+      });
+
+      onlineLayer.on("tileerror", function () {
+        if (!onlineTileSucceeded && currentTileMode !== "mbtiles") {
+          console.warn("Online tiles unavailable. Switching to MBTiles.");
+          switchToMbtiles();
+        }
+      });
+
+      setTileLayer(onlineLayer, "online");
+      setStatus("Trying online tiles first...", "warn");
+    }
+
+    followBtn.addEventListener("click", () => {
+      followDrone = !followDrone;
+      setFollowButtonState();
+    });
+
+    centerUcfBtn.addEventListener("click", () => {
+      map.setView(UCF_CENTER, UCF_DEFAULT_ZOOM);
+    });
+
+    async function refreshDrone() {
+      try {
+        const res = await fetch("/map/coords", { cache: "no-store" });
+
+        if (!res.ok) {
+          if (res.status === 503) {
+            setStatus("Backend disabled or flight not started.", "warn");
+            setTelemetry(null, false, false);
+            if (currentTileMode === "mbtiles") {
+              fitToOfflineBoundsIfAvailable();
+            }
+            return;
           }
+          setStatus(`Map data error: HTTP ${res.status}`, "err");
+          return;
+        }
+
+        const data = await res.json();
+        const connected = !!data.connected;
+        const hasFix = !!data.has_fix;
+        const drone = data.drone || null;
+        const trail = Array.isArray(data.trail) ? data.trail : [];
+
+        setTelemetry(drone, hasFix, connected);
+
+        if (!connected) {
+          setStatus("Telemetry disconnected", "warn");
+          if (currentTileMode === "mbtiles") {
+            fitToOfflineBoundsIfAvailable();
+          }
+          return;
+        }
+
+        if (!hasFix || !drone) {
+          if (currentTileMode === "mbtiles") {
+            fitToOfflineBoundsIfAvailable();
+          }
+
+          setStatus(
+            currentTileMode === "online"
+              ? "Connected, waiting for GPS fix..."
+              : currentTileMode === "mbtiles"
+                ? "Offline MBTiles active, waiting for GPS fix..."
+                : "Tracking view active, waiting for GPS fix...",
+            "warn"
+          );
+          return;
+        }
+
+        const latlng = [drone.lat, drone.lon];
+        const heading = Number(drone.heading || 0);
+
+        if (!droneMarker) {
+          droneMarker = L.marker(latlng, {
+            icon: makeDroneArrowIcon(heading),
+            zIndexOffset: 1000
+          })
+            .bindPopup("StormEye Drone")
+            .addTo(map);
+        } else {
+          droneMarker.setLatLng(latlng);
+          droneMarker.setIcon(makeDroneArrowIcon(heading));
+        }
+
+        trailLine.setLatLngs(trail.map(p => [p.lat, p.lon]));
+
+        if (!hasCenteredOnFirstFix) {
+          map.setView(latlng, FIRST_FIX_ZOOM);
+          hasCenteredOnFirstFix = true;
+        } else if (followDrone) {
+          map.panTo(latlng, { animate: false });
+        }
+
+        if (currentTileMode === "online") {
+          setStatus(
+            followDrone
+              ? "Live GPS tracking active (online tiles, follow ON)"
+              : "Live GPS tracking active (online tiles, follow OFF)",
+            "ok"
+          );
+        } else if (currentTileMode === "mbtiles") {
+          setStatus(
+            followDrone
+              ? "Live GPS tracking active (offline MBTiles, follow ON)"
+              : "Live GPS tracking active (offline MBTiles, follow OFF)",
+            "ok"
+          );
+        } else {
+          setStatus(
+            followDrone
+              ? "Live GPS tracking active (blank offline view, follow ON)"
+              : "Live GPS tracking active (blank offline view, follow OFF)",
+            "ok"
+          );
         }
       } catch (e) {
-        console.error('refreshPoints failed:', e);
+        console.error("refreshDrone failed:", e);
+        setStatus("Map data fetch failed.", "err");
       }
     }
 
-    refreshPoints();
-    setInterval(refreshPoints, 3000);
+    (async function init() {
+      setFollowButtonState();
+      await loadOfflineInfo();
+      startTiles();
+      map.setView(UCF_CENTER, UCF_DEFAULT_ZOOM);
+      refreshDrone();
+      setInterval(refreshDrone, 1000);
+    })();
   </script>
 </body>
 </html>

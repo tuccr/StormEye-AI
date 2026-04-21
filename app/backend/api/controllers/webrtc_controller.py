@@ -1,5 +1,6 @@
+import asyncio
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Set
 
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaBlackhole
@@ -8,6 +9,23 @@ from fastapi.responses import JSONResponse
 
 from ..models.webrtc_models import Offer
 from ...services.video_service import InferenceVideoTrack
+from ..routes.pistream_routes import is_flight_enabled  # <-- import from pistream_routes to avoid cycles
+
+# Track active peer connections so we can close them when flight ends
+_ACTIVE_PCS: Set[RTCPeerConnection] = set()
+_ACTIVE_LOCK = asyncio.Lock()
+
+
+async def close_all_peers():
+    async with _ACTIVE_LOCK:
+        pcs = list(_ACTIVE_PCS)
+        _ACTIVE_PCS.clear()
+
+    for pc in pcs:
+        try:
+            await pc.close()
+        except Exception:
+            pass
 
 
 async def handle_offer(request: Offer, mode: str = "stream", thresh: float = 0.25):
@@ -21,7 +39,19 @@ async def handle_offer(request: Offer, mode: str = "stream", thresh: float = 0.2
       - "inference" -> start with AI enabled
     """
     try:
+        if not is_flight_enabled():
+            return JSONResponse({"error": "Backend disabled (flight ended)."}, status_code=503)
+
         pc = RTCPeerConnection()
+
+        async with _ACTIVE_LOCK:
+            _ACTIVE_PCS.add(pc)
+
+        @pc.on("connectionstatechange")
+        async def on_conn_state():
+            if pc.connectionState in ("failed", "closed", "disconnected"):
+                async with _ACTIVE_LOCK:
+                    _ACTIVE_PCS.discard(pc)
 
         # Keep a reference to the server-side datachannel when it arrives
         data_channel_holder: Dict[str, Any] = {"ch": None}
@@ -57,9 +87,12 @@ async def handle_offer(request: Offer, mode: str = "stream", thresh: float = 0.2
                 except Exception:
                     return
 
+                # If flight ended mid-session, ignore controls
+                if not is_flight_enabled():
+                    return
+
                 if "ai" in payload:
                     video_track.set_ai_enabled(bool(payload["ai"]))
-                    # If AI is turned off, also clear overlay by default
                     if not bool(payload["ai"]):
                         video_track.set_overlay_enabled(False)
 

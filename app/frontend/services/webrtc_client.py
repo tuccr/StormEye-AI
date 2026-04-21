@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import aiohttp
 import cv2
@@ -12,6 +13,9 @@ from PyQt6.QtGui import QPainter, QColor, QFont, QPen
 
 
 class WebRTCClient(QtCore.QObject):
+    # "disconnected" | "connecting" | "connected" | "failed"
+    connection_state_changed = QtCore.pyqtSignal(str)
+
     _render_tick = QtCore.pyqtSignal()
     _clear_requested = QtCore.pyqtSignal()
 
@@ -19,11 +23,14 @@ class WebRTCClient(QtCore.QObject):
         super().__init__()
         self.video_label = video_label
 
-        # Runtime toggles
+        self._state = "disconnected"
+        self._has_received_frame = False
+        self._connected_event = asyncio.Event()
+        self._connected_event.clear()
+
         self.ai_enabled = bool(ai_enabled)
         self.overlay_enabled = bool(overlay_enabled)
 
-        # WebRTC state
         self.pc = None
         self.box_data = []
         self._data_channel = None
@@ -31,15 +38,12 @@ class WebRTCClient(QtCore.QObject):
         self._conn_lock = asyncio.Lock()
         self._closing = False
 
-        # Low-latency rendering (drop frames if UI is behind)
         self._latest_frame = None
         self._render_pending = False
 
-        # Cached drawing resources
         self._canvas = None
         self._canvas_size = (0, 0)
 
-        # Optional draw throttles
         self.draw_text = True
         self.text_every_n_frames = 2
         self._frame_counter = 0
@@ -47,15 +51,54 @@ class WebRTCClient(QtCore.QObject):
         self._render_tick.connect(self._on_render_tick, QtCore.Qt.ConnectionType.QueuedConnection)
         self._clear_requested.connect(self._clear_video, QtCore.Qt.ConnectionType.QueuedConnection)
 
-    async def start_connection(self):
+    def _set_state(self, new_state: str):
+        if new_state != self._state:
+            self._state = new_state
+            try:
+                self.connection_state_changed.emit(new_state)
+            except Exception:
+                pass
+
+    async def start_connection(self, retry_window_s: float = 12.0, retry_interval_s: float = 0.75):
+        """
+        Connect to backend WebRTC. If backend returns 503 (Pi not ready),
+        keep retrying for retry_window_s instead of failing immediately.
+        """
         async with self._conn_lock:
             self._closing = False
+            self._has_received_frame = False
+            self._connected_event.clear()
+            self._set_state("connecting")
 
             if self.pc:
                 await self.close_connection()
 
             pc = RTCPeerConnection()
             self.pc = pc
+
+            @pc.on("connectionstatechange")
+            async def on_connectionstatechange():
+                if self._closing:
+                    return
+                st = pc.connectionState
+                if st == "failed":
+                    self._connected_event.clear()
+                    self._set_state("failed")
+                elif st in ("closed", "disconnected"):
+                    self._connected_event.clear()
+                    self._set_state("disconnected")
+
+            @pc.on("iceconnectionstatechange")
+            async def on_iceconnectionstatechange():
+                if self._closing:
+                    return
+                st = pc.iceConnectionState
+                if st == "failed":
+                    self._connected_event.clear()
+                    self._set_state("failed")
+                elif st in ("closed", "disconnected"):
+                    self._connected_event.clear()
+                    self._set_state("disconnected")
 
             pc.addTransceiver("video", direction="recvonly")
 
@@ -67,6 +110,11 @@ class WebRTCClient(QtCore.QObject):
                         if self._closing:
                             break
 
+                        if not self._has_received_frame:
+                            self._has_received_frame = True
+                            self._connected_event.set()
+                            self._set_state("connected")
+
                         self._latest_frame = frame
                         if not self._render_pending:
                             self._render_pending = True
@@ -75,6 +123,8 @@ class WebRTCClient(QtCore.QObject):
                 except Exception as e:
                     if not self._closing:
                         print(f"Track stopped: {e}")
+                        self._connected_event.clear()
+                        self._set_state("disconnected")
 
             data_channel = pc.createDataChannel("data")
             self._data_channel = data_channel
@@ -82,7 +132,6 @@ class WebRTCClient(QtCore.QObject):
             @data_channel.on("open")
             def on_open():
                 print("Data channel is open")
-                # Send initial control state (no restart needed later)
                 self.send_control(ai=self.ai_enabled, overlay=self.overlay_enabled)
 
             @data_channel.on("message")
@@ -103,32 +152,78 @@ class WebRTCClient(QtCore.QObject):
             if self._closing or self.pc is not pc:
                 return
 
-            # Only affects INITIAL state. After connected, toggles are live via datachannel.
-            url = "http://127.0.0.1:8000/webrtc/offer/inference" if self.ai_enabled else "http://127.0.0.1:8000/webrtc/offer"
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url,
-                    json={"sdp": pc.localDescription.sdp, "type": pc.localDescription.type},
-                ) as resp:
-                    if resp.status != 200:
-                        if not self._closing:
-                            print("Failed to get answer from server")
-                        return
-                    answer = await resp.json(content_type=None)
-
-            if self._closing or self.pc is not pc:
-                return
-
-            await pc.setRemoteDescription(
-                RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+            url = (
+                "http://127.0.0.1:8000/webrtc/offer/inference"
+                if self.ai_enabled
+                else "http://127.0.0.1:8000/webrtc/offer"
             )
 
-            print("WebRTC connection established.")
+            deadline = time.monotonic() + float(retry_window_s)
+
+            while True:
+                if self._closing or self.pc is not pc:
+                    return
+
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            url,
+                            json={"sdp": pc.localDescription.sdp, "type": pc.localDescription.type},
+                        ) as resp:
+
+                            # ✅ 503 means backend is up but Pi isn’t ready yet → retry
+                            if resp.status == 503:
+                                if time.monotonic() >= deadline:
+                                    print("Backend still not ready (503) after retry window.")
+                                    self._set_state("failed")
+                                    return
+
+                                # keep showing “connecting…”
+                                await asyncio.sleep(retry_interval_s)
+                                continue
+
+                            if resp.status != 200:
+                                print(f"Failed to get answer from server (HTTP {resp.status})")
+                                self._set_state("failed")
+                                return
+
+                            answer = await resp.json(content_type=None)
+                            if "sdp" not in answer or "type" not in answer:
+                                print("Malformed answer from server.")
+                                self._set_state("failed")
+                                return
+
+                except Exception as e:
+                    # transient failures -> retry until deadline
+                    if time.monotonic() >= deadline:
+                        print(f"Offer retry window expired: {e}")
+                        self._set_state("failed")
+                        return
+                    await asyncio.sleep(retry_interval_s)
+                    continue
+
+                # Got an answer — finish handshake
+                if self._closing or self.pc is not pc:
+                    return
+
+                await pc.setRemoteDescription(
+                    RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+                )
+                print("WebRTC offer/answer complete. Waiting for first video frame...")
+                return
+
+    async def wait_connected(self, timeout_s: float = 10.0) -> bool:
+        try:
+            await asyncio.wait_for(self._connected_event.wait(), timeout=timeout_s)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     async def close_connection(self):
         async with self._conn_lock:
             self._closing = True
+            self._has_received_frame = False
+            self._connected_event.clear()
             self._latest_frame = None
             self._render_pending = False
 
@@ -143,9 +238,8 @@ class WebRTCClient(QtCore.QObject):
             self._data_channel = None
             self.box_data = []
             self._clear_requested.emit()
+            self._set_state("disconnected")
             print("WebRTC connection closed.")
-
-    # -------- Control plane --------
 
     def set_ai_enabled(self, enabled: bool):
         self.ai_enabled = bool(enabled)
@@ -158,14 +252,11 @@ class WebRTCClient(QtCore.QObject):
             self.box_data = []
 
     def send_control(self, **payload):
-        """Send control message to backend over datachannel, if available."""
         try:
             if self._data_channel and self._data_channel.readyState == "open":
                 self._data_channel.send(json.dumps(payload))
         except Exception:
             pass
-
-    # -------- GUI thread slots --------
 
     @QtCore.pyqtSlot()
     def _on_render_tick(self):
@@ -175,7 +266,6 @@ class WebRTCClient(QtCore.QObject):
 
         frame = self._latest_frame
         self._latest_frame = None
-
         if frame is None:
             self._render_pending = False
             return
@@ -200,8 +290,6 @@ class WebRTCClient(QtCore.QObject):
         except RuntimeError:
             pass
 
-    # -------- Rendering --------
-
     def _update_video_label(self, frame):
         target_w = max(1, self.video_label.width())
         target_h = max(1, self.video_label.height())
@@ -212,11 +300,7 @@ class WebRTCClient(QtCore.QObject):
         bytes_per_line = ch * orig_w
 
         qt_image = QtGui.QImage(
-            img.data,
-            orig_w,
-            orig_h,
-            bytes_per_line,
-            QtGui.QImage.Format.Format_RGB888,
+            img.data, orig_w, orig_h, bytes_per_line, QtGui.QImage.Format.Format_RGB888
         )
         frame_pixmap = QtGui.QPixmap.fromImage(qt_image)
 
@@ -227,10 +311,7 @@ class WebRTCClient(QtCore.QObject):
         offset_y = (target_h - disp_h) // 2
 
         scaled_frame = frame_pixmap.scaled(
-            disp_w,
-            disp_h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.FastTransformation,
+            disp_w, disp_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation
         )
 
         if self._canvas is None or self._canvas_size != (target_w, target_h):
@@ -246,7 +327,6 @@ class WebRTCClient(QtCore.QObject):
 
             if self.box_data:
                 painter.setPen(QPen(QColor(255, 0, 0), 2))
-
                 self._frame_counter += 1
                 draw_text_now = self.draw_text and (self._frame_counter % self.text_every_n_frames == 0)
                 if draw_text_now:
@@ -261,12 +341,8 @@ class WebRTCClient(QtCore.QObject):
                     scores = data.get("scores", [])
 
                     x1, y1, x2, y2 = [float(c) for c in box]
-
                     if max(x1, y1, x2, y2) <= 1.5:
-                        x1 *= orig_w
-                        x2 *= orig_w
-                        y1 *= orig_h
-                        y2 *= orig_h
+                        x1 *= orig_w; x2 *= orig_w; y1 *= orig_h; y2 *= orig_h
 
                     sx1 = int(x1 * scale) + offset_x
                     sy1 = int(y1 * scale) + offset_y
@@ -276,9 +352,7 @@ class WebRTCClient(QtCore.QObject):
                     painter.drawRect(sx1, sy1, sx2 - sx1, sy2 - sy1)
 
                     if draw_text_now and labels and scores:
-                        label_text = f"{labels[0]}: {float(scores[0]):.2f}"
-                        painter.drawText(sx1, max(0, sy1 - 10), label_text)
-
+                        painter.drawText(sx1, max(0, sy1 - 10), f"{labels[0]}: {float(scores[0]):.2f}")
         finally:
             painter.end()
 
