@@ -163,6 +163,4 @@ dependencies:
       - webencodings==0.5.1
       - yarg==0.1.9
       - yarl==1.22.0
-      - pymavlink
-      - pymavserial
 prefix: /home/josephb/miniconda3/envs/StormEye
