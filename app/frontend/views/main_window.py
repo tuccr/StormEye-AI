@@ -94,19 +94,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         QtCore.QTimer.singleShot(0, self._post_qt_startup)
 
-    def _set_connection_status(self, state: str):
-        if state == "connected":
-            dot = "#3CB371"
-            text = "Connected"
-        elif state == "connecting":
-            dot = "#F4C542"
-            text = "Connecting..."
-        elif state == "failed":
-            dot = "#E74C3C"
-            text = "Connection Failed"
-        else:
-            dot = "#E74C3C"
-            text = "Not Connected"
+    async def _reset_webrtc(self):
+        if self.webrtc_client:
+            await self.webrtc_client.close()
+
+        self.webrtc_client = WebRTCClient(self.ui.videoLabel)
+
+    def on_connect_clicked(self):
+        asyncio.create_task(self._connect_webrtc())
 
         self.ui.connectionStatus.setText(
             f'<span style="color:{dot}; font-size:18px;">●</span> '
