@@ -6,9 +6,20 @@ from aiortc import RTCPeerConnection, RTCSessionDescription
 from av import VideoFrame
 from pymavlink import mavutil
 
+import os
+from dotenv import load_dotenv
+import importlib.util
+import sys
+
+# Load .env
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # backend/
+dotenv_path = os.path.join(BASE_DIR, ".env")
+load_dotenv(dotenv_path)
+
+TELEMETRY_PORT = os.getenv("TELEMETRY_PORT")  # string path
 
 # Telemetry receiver port, needs to be changed for ground station
-RECIEVER_PORT = "COM3"
+RECIEVER_PORT = TELEMETRY_PORT
 
 # Prefer an IP if possible. mDNS (raspberrypi.local) can be flaky on Windows.
 PI_OFFER_URL = os.getenv("PI_OFFER_URL", "http://10.3.141.1:8080/offer")
